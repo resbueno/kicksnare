@@ -1,0 +1,19 @@
+[Unit]
+Description=Kicksnare (worker: Demucs + transcrição)
+After=network.target
+
+[Service]
+User=kicksnare
+Group=kicksnare
+WorkingDirectory=/opt/kicksnare
+EnvironmentFile=/etc/kicksnare.env
+ExecStart=/opt/kicksnare/.venv/bin/python -m kicksnare.worker
+Restart=on-failure
+RestartSec=5
+# VPS pequena: nunca deixa o Demucs derrubar o resto do servidor
+Nice=10
+MemoryHigh=2600M
+MemoryMax=3200M
+
+[Install]
+WantedBy=multi-user.target

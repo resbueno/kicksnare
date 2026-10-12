@@ -1,0 +1,8 @@
+.venv/
+.venv-ytdlp/
+data/
+__pycache__/
+*.pyc
+.DS_Store
+# partitura de terceiros (direitos autorais) e derivados: não publicar
+examples/

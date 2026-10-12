@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kicksnare · Partitura</title>
+<link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
+<link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
+<meta name="theme-color" content="#16181d">
+<link rel="stylesheet" href="__BASE__/static/base.css">
+<style>
+  .practice { margin-top: 12px; font-size: .9rem; }
+  select, input[type=number], input[type=text] { font: inherit; padding: 4px 6px; color: var(--text);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .pagewrap { position: relative; margin: 14px 0; background: #fff; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .pagewrap img { display: block; width: 100%; height: auto; }
+  .pagewrap svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .pagelabel { color: var(--muted); font-size: .85rem; margin-top: 18px; }
+  .m rect.hit { fill: transparent; stroke: rgba(194,65,12,.35); stroke-width: 2; cursor: pointer; }
+  .m:hover rect.hit { fill: rgba(194,65,12,.12); }
+  .m text { font: 700 18px system-ui, sans-serif; fill: #c2410c; pointer-events: none; }
+  .m.cur rect.hit { fill: rgba(194,65,12,.38); stroke: #c2410c; stroke-width: 4; }
+  .m.sel rect.hit { stroke: #1d4ed8; stroke-width: 4; stroke-dasharray: 10 6; }
+  .m.ign rect.hit { stroke: rgba(120,120,120,.4); fill: rgba(120,120,120,.18); }
+  .edit .m rect.hit { pointer-events: none; }
+  .edit svg { cursor: crosshair; }
+  .bar line { stroke: #dc2626; stroke-width: 3; }
+  .stafftools { display: flex; flex-wrap: wrap; gap: 12px; font-size: .85rem; margin-top: 6px; }
+  .anchor { display: flex; gap: 8px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); font-size: .9rem; }
+  .small { font-size: .85rem; }
+  .warn-text { color: var(--warn); }
+  #dropzone { border: 2px dashed var(--line); border-radius: 10px; padding: 18px; text-align: center; }
+</style>
+</head>
+<body>
+<header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare — início"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
+<main>
+  <p><a id="back" href="__BASE__/">← Música</a></p>
+  <h1 id="title">Partitura em PDF</h1>
+  <p class="muted">Envie o PDF da partitura. O Kicksnare não lê as notas: ele acha as barras de compasso,
+    você confere e informa a ordem de execução, e o cursor acompanha a música.</p>
+
+  <div class="panel" id="upload">
+    <div id="dropzone">
+      <label class="btn primary" for="pdf">Escolher PDF</label>
+      <input id="pdf" type="file" accept="application/pdf,.pdf" hidden>
+      <div id="upmsg" class="muted" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <div id="ready" hidden>
+    <audio id="player" controls preload="metadata" style="width:100%;margin-top:16px"></audio>
+    <div class="row practice">
+      <label>Faixa
+        <select id="track">
+          <option value="mix">Música original</option>
+          <option value="drums">Só a bateria</option>
+          <option value="no_drums">Sem a bateria</option>
+        </select>
+      </label>
+      <label>Velocidade
+        <select id="speed"><option value="0.5">50%</option><option value="0.65">65%</option>
+          <option value="0.8">80%</option><option value="0.9">90%</option><option value="1" selected>100%</option></select>
+      </label>
+      <label>Repetir da posição <input type="number" id="loopA" min="1" style="width:5em">
+        até <input type="number" id="loopB" min="1" style="width:5em"></label>
+      <label><input type="checkbox" id="loopOn"> repetir</label>
+      <label><input type="checkbox" id="follow" checked> seguir</label>
+      <span id="now" class="muted"></span>
+    </div>
+
+    <h2>Ordem de execução</h2>
+    <p class="muted small">Compassos da partitura na ordem em que são tocados. Ex.: <code>1-8, 1-8, 9-16, 17-24, 1-4</code>
+      ou <code>1-8 x2, 9-16</code>. Repetições e voltas mudam a ordem física.</p>
+    <div class="row">
+      <input type="text" id="order" placeholder="1-16" style="flex:1 1 320px">
+      <button id="applyOrder" class="primary">Aplicar ordem</button>
+      <button id="useSuggest" title="Usa os sinais de repetição que foram detectados">Usar repetições detectadas</button>
+    </div>
+    <div id="orderMsg" class="small"></div>
+
+    <h2>Sincronia com o áudio</h2>
+    <p class="muted small">Sem âncoras, o 1º compasso da partitura é o 1º compasso detectado no áudio e os demais
+      seguem a grade. Onde divergir, clique num compasso da partitura (ele fica selecionado e o áudio pula para
+      lá), ouça até o ponto certo e use <b>Ancorar</b>.</p>
+    <div class="row">
+      <span id="sel" class="muted">Nenhum compasso selecionado</span>
+      <button id="anchorBtn" disabled>Ancorar compasso selecionado ao tempo atual</button>
+      <button id="anchorFirst">Primeiro compasso = agora</button>
+      <button id="clearAnchors">Limpar âncoras</button>
+    </div>
+    <div id="anchors"></div>
+
+    <h2>Compassos</h2>
+    <div class="row">
+      <label><input type="checkbox" id="editMode"> editar barras de compasso</label>
+      <span class="muted small" id="editHelp" hidden>Clique na pauta para <b>adicionar</b> uma barra; clique numa barra vermelha para <b>remover</b>.</span>
+      <button id="replace">Trocar PDF</button>
+    </div>
+    <div id="summary" class="muted small" style="margin-top:6px"></div>
+    <div id="pages"></div>
+  </div>
+</main>
+
+<script>
+const BASE = "__BASE__";
+const id = decodeURIComponent((location.pathname.match(/\/songs\/([^/]+)/) || [])[1] || "");
+const API = `${BASE}/api/songs/${encodeURIComponent(id)}`;
+const $ = (s) => document.querySelector(s);
+const NS = "http://www.w3.org/2000/svg";
+let S = null;               // estado do servidor
+let selPos = null;          // posição (1-based) selecionada
+let curPos = -1;            // posição em reprodução
+let timer = null;
+
+const store = {
+  get(k, d) { try { return localStorage.getItem("ks:" + k) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("ks:" + k, v); } catch {} },
+};
+const fmt = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
+async function api(path, opts) {
+  const r = await fetch(API + path, opts);
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch {} throw new Error(m); }
+  return r.json();
+}
+const put = (path, body) => api(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+async function boot() {
+  $("#back").href = `${BASE}/songs/${encodeURIComponent(id)}`;
+  try {
+    const song = await (await fetch(API)).json();
+    $("#title").textContent = (song.title || id) + " · partitura em PDF";
+  } catch {}
+  $("#player").src = `${API}/track/mix.mp3`;
+  S = await api("/sheet");
+  render();
+}
+
+$("#pdf").addEventListener("change", async (ev) => {
+  const f = ev.target.files[0]; if (!f) return;
+  $("#upmsg").textContent = "Enviando e detectando compassos…";
+  const fd = new FormData(); fd.append("file", f);
+  try {
+    const r = await fetch(`${API}/sheet`, { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    S = await r.json(); $("#upmsg").textContent = ""; selPos = null; render();
+  } catch (e) { $("#upmsg").textContent = "Erro: " + e.message; }
+  ev.target.value = "";
+});
+$("#replace").onclick = () => { $("#upload").hidden = false; $("#pdf").click(); };
+
+// ---------- desenho ----------
+function el(tag, attrs = {}, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.append(e);
+  return e;
+}
+
+function render() {
+  const has = S && S.exists;
+  $("#upload").hidden = has;
+  $("#ready").hidden = !has;
+  if (!has) return;
+  const nm = S.measures.length, order = S.order;
+  $("#order").value = S.order_text;
+  $("#orderMsg").textContent = S.order_error ? "Ordem inválida: " + S.order_error : "";
+  $("#orderMsg").className = "small " + (S.order_error ? "warn-text" : "muted");
+  const staves = S.pages.reduce((n, p) => n + p.staves.filter((s) => !s.ignore).length, 0);
+  $("#summary").textContent = `${S.pages.length} página(s), ${staves} pauta(s), ${nm} compasso(s) detectado(s); ` +
+    `a ordem de execução tem ${order.length} posição(ões) e o áudio tem ${S.audio_end ? Math.round(S.audio_end) : "?"} s.`;
+  $("#loopA").max = $("#loopB").max = order.length;
+  renderAnchors();
+
+  const root = $("#pages"); root.replaceChildren();
+  root.classList.toggle("edit", $("#editMode").checked);
+  S.pages.forEach((pg) => {
+    const lab = document.createElement("div"); lab.className = "pagelabel"; lab.textContent = `Página ${pg.page}`;
+    root.append(lab);
+    const wrap = document.createElement("div"); wrap.className = "pagewrap";
+    const img = new Image(); img.src = `${API}/sheet/page/${pg.page}.png`; img.alt = `Página ${pg.page}`;
+    wrap.append(img);
+    const svg = el("svg", { viewBox: `0 0 ${pg.width} ${pg.height}`, preserveAspectRatio: "none", "data-page": pg.page });
+    wrap.append(svg);
+
+    S.measures.filter((m) => m.page === pg.page).forEach((m) => {
+      const g = el("g", { class: "m", "data-n": m.n }, svg);
+      el("rect", { class: "hit", x: m.x0, y: m.y0, width: m.x1 - m.x0, height: m.y1 - m.y0, rx: 6 }, g);
+      const t = el("text", { x: m.x0 + 6, y: m.y0 + 18 }, g); t.textContent = m.n;
+      g.addEventListener("click", (ev) => { if (!$("#editMode").checked) { ev.stopPropagation(); selectMeasure(m.n); } });
+    });
+    pg.staves.forEach((st) => {
+      if (st.ignore) {
+        el("rect", { x: st.x_left, y: st.y_top - 2 * st.space, width: st.x_right - st.x_left,
+          height: st.y_bottom - st.y_top + 4 * st.space, fill: "rgba(120,120,120,.25)", "pointer-events": "none" }, svg);
+      }
+      st.bars.forEach((b) => {
+        const g = el("g", { class: "bar" }, svg);
+        el("line", { x1: b.x, x2: b.x, y1: st.y_top - 0.8 * st.space, y2: st.y_bottom + 0.8 * st.space,
+          opacity: $("#editMode").checked ? 1 : 0.0 }, g);
+      });
+    });
+    svg.addEventListener("click", (ev) => onEditClick(ev, pg, svg));
+    root.append(wrap);
+
+    // ignorar pauta (barras e compassos de outros instrumentos)
+    const tools = document.createElement("div"); tools.className = "stafftools";
+    pg.staves.forEach((st, i) => {
+      const l = document.createElement("label");
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = st.ignore;
+      cb.onchange = async () => { S = await put("/sheet/layout", layoutPatch(pg.page, i, { ignore: cb.checked })); render(); };
+      l.append(cb, ` ignorar pauta ${i + 1}`);
+      tools.append(l);
+    });
+    if (pg.staves.length === 0) tools.textContent = "Nenhuma pauta de 5 linhas encontrada nesta página.";
+    root.append(tools);
+  });
+  paintHighlight(true);
+}
+
+function layoutPatch(page, staffIndex, changes) {
+  const pg = S.pages.find((p) => p.page === page);
+  return { pages: [{ page, staves: pg.staves.map((s, i) => ({
+    index: i, ignore: i === staffIndex && "ignore" in changes ? changes.ignore : s.ignore,
+    bars: i === staffIndex && changes.bars ? changes.bars : s.bars })) }] };
+}
+
+async function onEditClick(ev, pg, svg) {
+  if (!$("#editMode").checked) return;
+  const r = svg.getBoundingClientRect();
+  const x = (ev.clientX - r.left) * pg.width / r.width, y = (ev.clientY - r.top) * pg.height / r.height;
+  const st = pg.staves.find((s) => y >= s.y_top - 2 * s.space && y <= s.y_bottom + 2 * s.space);
+  if (!st) return;
+  const near = st.bars.findIndex((b) => Math.abs(b.x - x) <= 0.8 * st.space);
+  const bars = near >= 0 ? st.bars.filter((_, i) => i !== near)
+                         : [...st.bars, { x: Math.round(x * 10) / 10, kind: "bar", thick: false }];
+  S = await put("/sheet/layout", layoutPatch(pg.page, st.index, { bars }));
+  render();
+}
+$("#editMode").onchange = () => { $("#editHelp").hidden = !$("#editMode").checked; render(); };
+
+// ---------- ordem e âncoras ----------
+$("#applyOrder").onclick = async () => {
+  try { S = await put("/sheet/sync", { order_text: $("#order").value, anchors: S.anchors }); render(); }
+  catch (e) { $("#orderMsg").textContent = "Ordem inválida: " + e.message; $("#orderMsg").className = "small warn-text"; }
+};
+$("#useSuggest").onclick = () => { $("#order").value = S.suggested_text; $("#applyOrder").click(); };
+
+async function saveAnchors(anchors) { S = await put("/sheet/sync", { order_text: S.order_text, anchors }); render(); }
+function nearestPos(measureN) {
+  const t = $("#player").currentTime, cand = [];
+  S.order.forEach((m, i) => { if (m === measureN) cand.push(i + 1); });
+  if (!cand.length) return null;
+  return cand.reduce((best, p) => Math.abs(S.times[p - 1] - t) < Math.abs(S.times[best - 1] - t) ? p : best, cand[0]);
+}
+function selectMeasure(n) {
+  const pos = nearestPos(n);
+  if (pos == null) { $("#sel").textContent = `Compasso ${n} não está na ordem de execução`; return; }
+  selPos = pos;
+  $("#sel").textContent = `Selecionado: compasso ${n} (posição ${pos} da ordem)`;
+  $("#anchorBtn").disabled = false;
+  $("#player").currentTime = S.times[pos - 1];
+  paintHighlight(true);
+}
+$("#anchorBtn").onclick = () => {
+  if (selPos == null) return;
+  const t = $("#player").currentTime;
+  saveAnchors([...S.anchors.filter((a) => a.pos !== selPos), { pos: selPos, time: t }]);
+};
+$("#anchorFirst").onclick = () => {
+  saveAnchors([...S.anchors.filter((a) => a.pos !== 1), { pos: 1, time: $("#player").currentTime }]);
+};
+$("#clearAnchors").onclick = () => saveAnchors([]);
+
+function renderAnchors() {
+  const box = $("#anchors"); box.replaceChildren();
+  [...S.anchors].sort((a, b) => a.pos - b.pos).forEach((a) => {
+    const row = document.createElement("div"); row.className = "anchor";
+    const t = document.createElement("span");
+    t.textContent = `posição ${a.pos} (compasso ${S.order[a.pos - 1] ?? "?"}) = ${fmt(a.time)}`;
+    const go = document.createElement("button"); go.textContent = "ouvir";
+    go.onclick = () => { $("#player").currentTime = a.time; };
+    const del = document.createElement("button"); del.textContent = "remover";
+    del.onclick = () => saveAnchors(S.anchors.filter((x) => x.pos !== a.pos));
+    row.append(t, go, del); box.append(row);
+  });
+}
+
+// ---------- reprodução ----------
+let lastUserScroll = 0;
+for (const ev of ["wheel", "touchmove"]) window.addEventListener(ev, () => { lastUserScroll = Date.now(); }, { passive: true });
+window.addEventListener("keydown", (e) => {
+  if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(e.code)) lastUserScroll = Date.now();
+});
+const audio = $("#player");
+function posAt(t) {
+  const ts = S.times; let lo = 0, hi = ts.length - 1;
+  if (!ts.length || t < ts[0] - 0.05) return -1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (ts[mid] <= t) lo = mid; else hi = mid - 1; }
+  return lo + 1;
+}
+function paintHighlight(force) {
+  if (!S || !S.exists) return;
+  const p = posAt(audio.currentTime);
+  if (p === curPos && !force) return;
+  curPos = p;
+  const curM = p > 0 ? S.order[p - 1] : null;
+  const selM = selPos ? S.order[selPos - 1] : null;
+  document.querySelectorAll(".m").forEach((g) => {
+    const n = +g.dataset.n;
+    g.classList.toggle("cur", n === curM);
+    g.classList.toggle("sel", n === selM);
+  });
+  $("#now").textContent = p > 0 ? `posição ${p} · compasso ${curM}` : "antes do início";
+  if (curM != null && $("#follow").checked && Date.now() - lastUserScroll > 4000) {
+    const g = document.querySelector(`.m[data-n="${curM}"]`);
+    if (g) {
+      const r = g.getBoundingClientRect();
+      if (r.top < 80 || r.bottom > window.innerHeight - 40) g.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+}
+function tick() {
+  if (S && S.exists && $("#loopOn").checked) {
+    const a = parseInt($("#loopA").value), b = parseInt($("#loopB").value);
+    if (a >= 1 && b >= a && b <= S.times.length) {
+      const end = b < S.times.length ? S.times[b] : S.audio_end;
+      if (audio.currentTime >= end - 0.005) audio.currentTime = S.times[a - 1];
+    }
+  }
+  paintHighlight(false);
+  if (!audio.paused) requestAnimationFrame(tick);
+}
+audio.addEventListener("play", () => requestAnimationFrame(tick));
+for (const ev of ["seeked", "timeupdate", "pause"]) audio.addEventListener(ev, () => paintHighlight(false));
+$("#speed").onchange = () => { audio.playbackRate = parseFloat($("#speed").value); };
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || /INPUT|SELECT|TEXTAREA|BUTTON/.test(document.activeElement.tagName)) return;
+  e.preventDefault(); audio.paused ? audio.play() : audio.pause();
+});
+
+
+// ---------- faixa: original / só bateria / sem bateria ----------
+function setTrack(track, keepState) {
+  const a = $("#player");
+  const t = a.currentTime, wasPlaying = !a.paused, rate = a.playbackRate;
+  a.src = `${BASE}/api/songs/${encodeURIComponent(id)}/track/${track}.mp3`;
+  a.playbackRate = rate;
+  if (keepState) {
+    a.addEventListener("loadedmetadata", function once() {
+      a.removeEventListener("loadedmetadata", once);
+      a.currentTime = t; a.playbackRate = rate;
+      if (wasPlaying) a.play().catch(() => {});
+    });
+  }
+  try { localStorage.setItem("ks:track", track); } catch {}
+}
+(function initTrack() {
+  let saved = "mix";
+  try { saved = localStorage.getItem("ks:track") || "mix"; } catch {}
+  const sel = $("#track"); if (!sel) return;
+  sel.value = saved;
+  sel.onchange = () => setTrack(sel.value, true);
+  if (saved !== "mix") setTrack(saved, false);
+})();
+
+boot();
+</script>
+</body>
+</html>

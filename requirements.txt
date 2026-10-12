@@ -1,0 +1,16 @@
+# Python 3.10-3.13 (adtof-pytorch exige >=3.10; torch<2.9 não tem wheel para 3.14)
+yt-dlp
+demucs==4.0.1
+# demucs 4.0.1 salva via torchaudio.save; torchaudio>=2.9 exige torchcodec
+torch<2.9
+torchaudio<2.9
+soundfile
+adtof-pytorch @ git+https://github.com/xavriley/ADTOF-pytorch
+beat-this
+pretty_midi
+music21
+fastapi
+uvicorn
+python-multipart
+pypdfium2
+opencv-python-headless

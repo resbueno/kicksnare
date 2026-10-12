@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kicksnare</title>
+<link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
+<link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
+<meta name="theme-color" content="#16181d">
+<link rel="stylesheet" href="__BASE__/static/base.css">
+<style>
+  #score { background: #fff; border-radius: 10px; padding: 8px; overflow-x: auto; }
+  .pager { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+  .pgroup { margin-top: 16px; }
+  .pgroup h3 { font-size: 1rem; margin: 0 0 6px; }
+  .grid { border-collapse: collapse; font-size: .8rem; }
+  .grid th { text-align: right; padding: 2px 8px 2px 0; font-weight: 500; color: var(--muted); white-space: nowrap; }
+  .grid td { width: 22px; height: 24px; border: 1px solid var(--line); text-align: center; cursor: pointer;
+    user-select: none; padding: 0; }
+  .grid td.beat { border-left: 2px solid var(--muted); }
+  .grid td.on { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+  .grid td.rare { outline: 1px dashed var(--warn); outline-offset: -3px; }
+  .legend { font-size: .85rem; color: var(--muted); }
+  .practice { margin-top: 12px; font-size: .9rem; }
+  .practice select, .practice input[type=number] { font: inherit; padding: 4px 6px; color: var(--text);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .grid-wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare — início"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
+<main>
+  <p><a href="__BASE__/">← Músicas</a></p>
+  <h1 id="title">Carregando…</h1>
+  <div class="row" id="chips"></div>
+  <div id="status" class="muted"></div>
+
+  <div id="ready" hidden>
+    <audio id="player" controls preload="metadata" style="width:100%;margin-top:16px"></audio>
+    <div class="row practice">
+      <label>Faixa
+        <select id="track">
+          <option value="mix">Música original</option>
+          <option value="drums">Só a bateria</option>
+          <option value="no_drums">Sem a bateria</option>
+        </select>
+      </label>
+      <label>Velocidade
+        <select id="speed">
+          <option value="0.5">50%</option><option value="0.65">65%</option>
+          <option value="0.8">80%</option><option value="0.9">90%</option>
+          <option value="1" selected>100%</option>
+        </select>
+      </label>
+      <label>Compasso <input type="number" id="goto" min="1" value="1" style="width:5em">
+        <button id="gotoBtn">Ir</button></label>
+      <label>Repetir de <input type="number" id="loopA" min="1" style="width:5em">
+        até <input type="number" id="loopB" min="1" style="width:5em"></label>
+      <button id="markA" title="Usa o compasso atual como início">Marcar início</button>
+      <button id="markB" title="Usa o compasso atual como fim">Marcar fim</button>
+      <label><input type="checkbox" id="loopOn"> repetir</label>
+      <label><input type="checkbox" id="follow" checked> seguir</label>
+      <label title="Se o cursor estiver adiantado (+) ou atrasado (−) em relação ao som">Ajuste
+        <input type="number" id="offset" value="0" step="10" style="width:5.5em"> ms</label>
+      <span id="now" class="muted"></span>
+    </div>
+
+    <h2>Partitura</h2>
+    <div class="pager">
+      <button id="prev">←</button>
+      <span id="range" class="muted"></span>
+      <button id="next">→</button>
+    </div>
+    <div id="score"></div>
+
+    <h2>Padrões</h2>
+    <p class="muted">Bateria repete o mesmo groove. Cada grupo reúne compassos parecidos.
+      Clique nas células para corrigir o padrão e aplique: vale para todos os compassos do grupo.</p>
+    <p class="legend">Cor cheia = golpe no padrão (presente em 50% ou mais dos compassos). Borda tracejada = aparece em 20–50%.
+      Cada coluna é uma subdivisão; a linha grossa marca o início de cada tempo.</p>
+    <div class="row">
+      <label><input type="checkbox" id="purge" checked> ao aplicar, remover também os golpes raros (menos de 50%) das linhas que eu alterei</label>
+      <label title="Todos os compassos do grupo passam a ter exatamente estes golpes nas linhas alteradas (apaga variações dessas linhas)">
+        <input type="checkbox" id="enforce"> impor o padrão a todos os compassos do grupo</label>
+      <button id="reset">Desfazer todas as correções</button>
+    </div>
+    <div id="patterns"></div>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.9.0/build/opensheetmusicdisplay.min.js"></script>
+<script>
+const BASE = "__BASE__";
+const id = decodeURIComponent((location.pathname.match(/\/songs\/([^/]+)/) || [])[1] || "");
+const $ = (s) => document.querySelector(s);
+const NAMES = { cymbal: "pratos", hihat: "chimbal", snare: "caixa", tom: "tom", kick: "bumbo" };
+const PAGE = 16;
+let osmd = null, first = 1, totalBars = 0;
+let steps = null, timing = null, curIdx = -1, manualPage = false;
+
+function chip(text, cls) { const c = document.createElement("span"); c.className = "chip " + (cls || ""); c.textContent = text; $("#chips").append(c); }
+
+async function boot() {
+  const song = await (await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}`)).json();
+  $("#title").textContent = song.title || id;
+  $("#chips").replaceChildren();
+  if (song.status !== "done") {
+    $("#status").textContent = song.status === "error" ? "Erro: " + (song.error || "") : (song.message || "Processando…");
+    setTimeout(boot, 3000);
+    return;
+  }
+  $("#status").textContent = "";
+  const link = document.createElement("a"); link.href = `${BASE}/songs/${encodeURIComponent(id)}/sheet`;
+  link.textContent = "Sincronizar com partitura em PDF →"; link.style.marginLeft = "8px";
+  $("#chips").append(link);
+  const st = song.stats || {};
+  chip(`${st.bars} compassos`); chip(`${Math.round(st.bpm_median)} BPM`);
+  chip(st.subdiv === 3 ? "grade de tercinas" : "grade de semicolcheias");
+  chip(st.bars_reliable ? "compassos confiáveis" : "compassos pouco confiáveis", st.bars_reliable ? "ok" : "warn");
+  totalBars = st.bars;
+  $("#player").src = `${BASE}/api/songs/${encodeURIComponent(id)}/track/${($("#track") || {}).value || "mix"}.mp3`;
+  $("#ready").hidden = false;
+  await drawScore(true);
+  await initSync();
+  await loadPatterns();
+}
+
+async function drawScore(reload) {
+  const holder = $("#score");
+  if (!osmd) {
+    osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(holder, { autoResize: true, drawTitle: false, drawSubtitle: false, drawComposer: false, drawPartNames: false,
+      cursorsOptions: [{ type: 0, color: "#c2410c", alpha: 0.5, follow: false }] });
+  }
+  if (reload) {
+    const xml = await (await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/score.musicxml?t=${Date.now()}`)).text();
+    await osmd.load(xml);
+  }
+  const last = Math.min(first + PAGE - 1, totalBars);
+  osmd.setOptions({ drawFromMeasureNumber: first, drawUpToMeasureNumber: last });
+  osmd.render();
+  $("#range").textContent = `compassos ${first}–${last} de ${totalBars}`;
+  $("#prev").disabled = first <= 1; $("#next").disabled = last >= totalBars;
+  curIdx = -1;
+  if (steps) syncCursor(true);
+}
+$("#prev").onclick = () => { first = Math.max(1, first - PAGE); manualPage = true; drawScore(false); };
+$("#next").onclick = () => { first += PAGE; manualPage = true; drawScore(false); };
+
+async function loadPatterns() {
+  const data = await (await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/patterns`)).json();
+  const root = $("#patterns"); root.replaceChildren();
+  if (!data.clusters.length) { root.textContent = "Nenhum grupo de compassos repetidos."; return; }
+  const p = document.createElement("p"); p.className = "muted";
+  p.textContent = `${data.covered_bars} de ${data.total_bars} compassos nos grupos exibidos` +
+    (data.edits ? ` · ${data.edits} correção(ões) aplicada(s)` : "");
+  root.append(p);
+  data.clusters.forEach((c) => root.append(clusterView(c)));
+}
+
+function clusterView(c) {
+  const box = document.createElement("div"); box.className = "pgroup panel";
+  const h = document.createElement("h3");
+  h.textContent = `Grupo ${c.id + 1} · ${c.bars} compassos (${c.ranges})`;
+  box.append(h);
+  const wrap = document.createElement("div"); wrap.className = "grid-wrap";
+  const t = document.createElement("table"); t.className = "grid";
+  const state = c.rows.map((r) => r.on.slice());
+  c.rows.forEach((r, ri) => {
+    const tr = document.createElement("tr");
+    const th = document.createElement("th"); th.textContent = NAMES[r.name] || r.name; tr.append(th);
+    r.freq.forEach((f, s) => {
+      const td = document.createElement("td");
+      if (s % c.subdiv === 0) td.classList.add("beat");
+      const paint = () => {
+        td.classList.toggle("on", state[ri][s]);
+        td.classList.toggle("rare", !state[ri][s] && f >= 0.2);
+        td.textContent = state[ri][s] ? "●" : (f >= 0.2 ? Math.round(f * 100) : "");
+        td.title = `${NAMES[r.name]} · presente em ${Math.round(f * 100)}% dos compassos`;
+      };
+      td.onclick = () => { state[ri][s] = !state[ri][s]; paint(); apply.disabled = false; };
+      paint(); tr.append(td);
+    });
+    t.append(tr);
+  });
+  wrap.append(t); box.append(wrap);
+  const apply = document.createElement("button"); apply.className = "primary"; apply.textContent = "Aplicar neste grupo";
+  apply.style.marginTop = "10px"; apply.disabled = true;
+  apply.onclick = async () => {
+    apply.disabled = true; apply.textContent = "Aplicando…";
+    const pattern = [];
+    c.rows.forEach((r, ri) => state[ri].forEach((on, s) => { if (on) pattern.push([r.pitch, s]); }));
+    const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/patterns/${c.id}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pattern, purge_rare: $("#purge").checked, enforce: $("#enforce").checked }) });
+    if (!r.ok) { apply.textContent = "Erro ao aplicar"; return; }
+    await drawScore(true); await loadPatterns();
+  };
+  box.append(apply);
+  return box;
+}
+
+$("#reset").onclick = async () => {
+  await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/edits/reset`, { method: "POST" });
+  await drawScore(true); await loadPatterns();
+};
+
+// ---------- sincronia: áudio <-> cursor ----------
+const audio = $("#player");
+const store = {
+  get(k, d) { try { return localStorage.getItem("ks:" + k) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("ks:" + k, v); } catch {} },
+};
+
+async function initSync() {
+  // 2ª instância do OSMD, sem renderizar: dá todos os passos da partitura inteira
+  const xml = await (await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/score.musicxml?t=${Date.now()}`)).text();
+  const probe = new opensheetmusicdisplay.OpenSheetMusicDisplay(document.createElement("div"), {});
+  await probe.load(xml);
+  const it = probe.Sheet.MusicPartManager.getIterator();
+  steps = [];
+  while (!it.EndReached) {
+    steps.push({ q: it.CurrentSourceTimestamp.RealValue * 4, m: it.CurrentMeasureIndex });
+    it.moveToNext();
+  }
+  timing = await (await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/timing`)).json();
+  $("#offset").value = store.get("offset:" + id, "0");
+  $("#loopA").max = $("#loopB").max = $("#goto").max = totalBars;
+  syncCursor(true);
+}
+
+// posição em beats (a partir do início da partitura) para um instante do áudio
+function timeToQ(t) {
+  const b = timing.beats;
+  if (t <= b[0]) return 0;
+  if (t >= b[b.length - 1]) return b.length - 1;
+  let lo = 0, hi = b.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (b[mid] <= t) lo = mid; else hi = mid; }
+  return lo + (t - b[lo]) / (b[lo + 1] - b[lo]);
+}
+function barAtQ(q) {   // compasso (1-based) que contém a posição q
+  let acc = 0;
+  for (const bar of timing.bars) { acc += bar.beats; if (q < acc) return bar.n; }
+  return timing.bars.length;
+}
+function stepIndexAt(q) {
+  let lo = 0, hi = steps.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (steps[mid].q <= q + 1e-6) lo = mid; else hi = mid - 1; }
+  return lo;
+}
+const offsetSec = () => (parseFloat($("#offset").value) || 0) / 1000;
+const curTime = () => audio.currentTime - offsetSec();
+const barStartTime = (n) => timing.bars[Math.min(Math.max(n, 1), timing.bars.length) - 1].start;
+const barEndTime = (n) => n >= timing.bars.length ? timing.beats[timing.beats.length - 1] : timing.bars[n].start;
+
+function syncCursor(force) {
+  if (!steps || !osmd) return;
+  const q = timeToQ(curTime());
+  const idx = stepIndexAt(q);
+  const bar = steps[idx].m + 1;
+  $("#now").textContent = `compasso ${bar}`;
+  if (idx === curIdx && !force) return;
+
+  const last = Math.min(first + PAGE - 1, totalBars);
+  if ((bar < first || bar > last) && $("#follow").checked) {
+    first = Math.floor((bar - 1) / PAGE) * PAGE + 1;
+    drawScore(false);          // redesenha e volta aqui com force
+    return;
+  }
+  if (bar < first || bar > last) return;   // "seguir" desligado: cursor fora da página
+
+  const cur = osmd.cursor;
+  if (curIdx >= 0 && idx > curIdx && idx - curIdx <= 8 && !force) {
+    for (let i = curIdx; i < idx; i++) cur.next();
+  } else {
+    cur.show(); cur.reset();
+    const it = cur.iterator, target = steps[idx].q;
+    while (!it.EndReached && it.CurrentSourceTimestamp.RealValue * 4 < target - 1e-6) it.moveToNext();
+    cur.update();
+  }
+  curIdx = idx;
+  scrollToCursor();
+}
+
+// rolagem automática: mantém o cursor à vista; não briga com quem rola à mão
+let lastUserScroll = 0;
+for (const ev of ["wheel", "touchmove"]) window.addEventListener(ev, () => { lastUserScroll = Date.now(); }, { passive: true });
+window.addEventListener("keydown", (e) => {
+  if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(e.code)) lastUserScroll = Date.now();
+});
+function scrollToCursor() {
+  if (!$("#follow").checked || Date.now() - lastUserScroll < 4000) return;
+  const el = document.querySelector('#score img[id^="cursor"]');
+  if (!el) return;
+  const r = el.getBoundingClientRect(), margin = 140;
+  if (r.top < margin || r.bottom > window.innerHeight - margin) {
+    window.scrollTo({ top: window.scrollY + r.top - window.innerHeight * 0.35, behavior: "smooth" });
+  }
+}
+
+function tick() {
+  if (timing && $("#loopOn").checked) {
+    const a = parseInt($("#loopA").value), b = parseInt($("#loopB").value);
+    if (a >= 1 && b >= a && curTime() >= barEndTime(b) - 0.005) {
+      audio.currentTime = barStartTime(a) + offsetSec();
+    }
+  }
+  syncCursor(false);
+  if (!audio.paused) requestAnimationFrame(tick);
+}
+audio.addEventListener("play", () => requestAnimationFrame(tick));
+for (const ev of ["seeked", "timeupdate", "pause"]) audio.addEventListener(ev, () => syncCursor(false));
+
+$("#speed").onchange = () => { audio.playbackRate = parseFloat($("#speed").value); store.set("speed", $("#speed").value); };
+$("#offset").onchange = () => { store.set("offset:" + id, $("#offset").value); curIdx = -1; syncCursor(true); };
+$("#gotoBtn").onclick = () => {
+  const n = Math.min(Math.max(parseInt($("#goto").value) || 1, 1), totalBars);
+  audio.currentTime = barStartTime(n) + offsetSec();
+};
+const currentBar = () => steps[stepIndexAt(timeToQ(curTime()))].m + 1;
+$("#markA").onclick = () => { $("#loopA").value = currentBar(); if (!$("#loopB").value) $("#loopB").value = currentBar(); };
+$("#markB").onclick = () => { $("#loopB").value = currentBar(); if (!$("#loopA").value) $("#loopA").value = currentBar(); };
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || /INPUT|SELECT|TEXTAREA|BUTTON/.test(document.activeElement.tagName)) return;
+  e.preventDefault(); audio.paused ? audio.play() : audio.pause();
+});
+$("#follow").onchange = () => syncCursor(true);
+
+
+// ---------- faixa: original / só bateria / sem bateria ----------
+function setTrack(track, keepState) {
+  const a = $("#player");
+  const t = a.currentTime, wasPlaying = !a.paused, rate = a.playbackRate;
+  a.src = `${BASE}/api/songs/${encodeURIComponent(id)}/track/${track}.mp3`;
+  a.playbackRate = rate;
+  if (keepState) {
+    a.addEventListener("loadedmetadata", function once() {
+      a.removeEventListener("loadedmetadata", once);
+      a.currentTime = t; a.playbackRate = rate;
+      if (wasPlaying) a.play().catch(() => {});
+    });
+  }
+  try { localStorage.setItem("ks:track", track); } catch {}
+}
+(function initTrack() {
+  let saved = "mix";
+  try { saved = localStorage.getItem("ks:track") || "mix"; } catch {}
+  const sel = $("#track"); if (!sel) return;
+  sel.value = saved;
+  sel.onchange = () => setTrack(sel.value, true);
+  if (saved !== "mix") setTrack(saved, false);
+})();
+
+boot();
+</script>
+</body>
+</html>
