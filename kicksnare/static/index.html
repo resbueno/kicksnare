@@ -37,6 +37,14 @@ const BASE = "__BASE__";
 const $ = (s) => document.querySelector(s);
 const STAGES = { ingest: "baixando", separate: "isolando bateria", transcribe: "transcrevendo", finalize: "finalizando" };
 
+// "pronto em ~4 min (14:32)"; abaixo de 1 min vira "menos de 1 min"
+function etaText(e) {
+  const m = Math.round(e.seconds / 60);
+  const quando = new Date(e.finish_at * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  const dur = e.seconds < 45 ? "menos de 1 min" : (m >= 60 ? `~${Math.floor(m / 60)} h ${m % 60} min` : `~${m} min`);
+  return `pronta em ${dur} (${quando})` + (e.calibrated ? "" : " · estimativa inicial");
+}
+
 function fmt(sec) { sec = Math.max(0, Math.round(sec)); return Math.floor(sec / 60) + "m" + String(sec % 60).padStart(2, "0") + "s"; }
 
 function render(songs) {
@@ -59,9 +67,17 @@ function render(songs) {
       meta.textContent = `${s.stats.bars} compassos · ${Math.round(s.stats.bpm_median)} BPM` +
         (s.stats.bars_reliable ? "" : " · compassos pouco confiáveis");
     } else if (s.status === "running") {
-      meta.textContent = (s.message || "Processando") + " · " + fmt(Date.now() / 1000 - s.started);
-    } else if (s.status === "queued") meta.textContent = "Na fila";
+      meta.textContent = (s.message || "Processando") + " · " + fmt(Date.now() / 1000 - s.started) +
+        (s.eta ? " · " + etaText(s.eta) : "");
+    } else if (s.status === "queued") {
+      meta.textContent = "Na fila" + (s.eta ? " · " + (s.eta.queue_ahead ? `${s.eta.queue_ahead} na frente · ` : "") + etaText(s.eta) : "");
+    }
     left.append(meta);
+    if (s.status === "running" && s.eta) {
+      const bar = document.createElement("div"); bar.className = "etabar";
+      const fill = document.createElement("div"); fill.style.width = Math.round(100 * s.eta.progress) + "%";
+      bar.append(fill); left.append(bar);
+    }
     if (s.status === "error") {
       const e = document.createElement("div"); e.className = "err-text"; e.textContent = s.error || "Erro";
       left.append(e);
@@ -71,6 +87,22 @@ function render(songs) {
     chip.className = "chip " + ({ done: "ok", error: "err", running: "warn" }[s.status] || "");
     chip.textContent = { done: "pronto", error: "erro", running: STAGES[s.stage] || "processando", queued: "na fila" }[s.status];
     right.append(chip);
+    const rn = document.createElement("button"); rn.textContent = "Renomear";
+    rn.onclick = () => {
+      const inp = document.createElement("input"); inp.type = "text"; inp.maxLength = 120; inp.value = s.title || "";
+      inp.style.cssText = "flex:1 1 220px;min-width:0";
+      const save = async () => {
+        const v = inp.value.trim(); if (!v || v === s.title) { load(); return; }
+        const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(s.id)}`, { method: "PATCH",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: v }) });
+        if (!r.ok) { try { alert((await r.json()).detail); } catch {} }
+        load();
+      };
+      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); if (e.key === "Escape") load(); });
+      inp.addEventListener("blur", save);
+      title.replaceWith(inp); inp.focus(); inp.select(); renaming = true;
+    };
+    right.append(rn);
     if (s.status !== "running") {
       const d = document.createElement("button"); d.textContent = "Apagar"; d.className = "danger";
       let armed = false;
@@ -114,14 +146,14 @@ $("#file").addEventListener("change", async (ev) => {
   ev.target.value = ""; load();
 });
 
-let isAdmin = false;
+let isAdmin = false, renaming = false;
 fetch(BASE + "/api/auth/me").then((r) => r.json()).then((u) => {
   isAdmin = !!u.is_admin;
   if (isAdmin) { $("#mineWrap").hidden = false; $("#mineWrap").style.display = ""; }
   load();
 }).catch(() => {});
 $("#mine").onchange = load;
-load(); setInterval(load, 3000);
+load(); setInterval(() => { if (!renaming || !document.activeElement || document.activeElement.tagName !== 'INPUT') { renaming = false; load(); } }, 3000);
 </script>
 </body>
 </html>

@@ -14,7 +14,24 @@ from .separate import ensure_no_drums, separate_drums
 
 
 def _set(song_id: str, stage: str, message: str) -> None:
-    db.update(song_id, stage=stage, message=message)
+    """Muda de etapa: guarda quanto a anterior demorou (alimenta a previsão de tempo)."""
+    row = db.get(song_id) or {}
+    timings = dict(row.get("timings") or {})
+    prev, since = row.get("stage"), row.get("stage_started")
+    if prev and since:
+        timings[prev] = round(time.time() - since, 1)
+    db.update(song_id, stage=stage, message=message, stage_started=time.time(), progress=0.0, timings=timings)
+
+
+def _duration(path) -> float | None:
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
+        return float(out)
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
 
 
 def process(song: dict) -> None:
@@ -23,13 +40,14 @@ def process(song: dict) -> None:
     _set(sid, "ingest", "Baixando áudio" if source.startswith("http") else "Preparando áudio")
     _, audio = ingest(source, song_id=sid)
     meta = DATA_DIR / sid / "meta.json"
-    if meta.exists():
+    if meta.exists() and not (db.get(sid) or {}).get("title"):   # nome editado pelo usuário prevalece
         db.update(sid, title=json.loads(meta.read_text()).get("title"))
+    db.update(sid, duration=_duration(audio))
 
     drums = audio.parent / "drums.wav"
     if not drums.exists():
         _set(sid, "separate", "Isolando a bateria (alguns minutos)")
-        _, metrics = separate_drums(audio)
+        _, metrics = separate_drums(audio, on_progress=lambda p: db.update(sid, progress=round(p, 3)))
         print(f"[{sid}] demucs {metrics}", flush=True)
 
     _set(sid, "transcribe", "Transcrevendo")
@@ -51,7 +69,12 @@ def process(song: dict) -> None:
                 ["ffmpeg", "-y", "-i", str(audio.parent / wav_name), "-vn", "-b:a", "128k", str(mp3)],
                 check=True, capture_output=True,
             )
-    db.update(sid, status="done", stage=None, message="Pronto", stats=stats, finished=time.time(), error=None)
+    row = db.get(sid) or {}
+    timings = dict(row.get("timings") or {})
+    if row.get("stage_started"):
+        timings["finalize"] = round(time.time() - row["stage_started"], 1)
+    db.update(sid, status="done", stage=None, message="Pronto", stats=stats, finished=time.time(), error=None,
+              timings=timings, progress=1.0)
 
 
 def main() -> None:

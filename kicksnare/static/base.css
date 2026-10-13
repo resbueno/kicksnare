@@ -61,3 +61,6 @@ button.danger:hover { border-color: var(--err); }
 .userbox .who { color: #e6e6e0; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .userbox .pwlink { color: #fb923c; font-size: .85rem; }
 @media (max-width: 520px) { .userbox .who { display: none; } }
+
+.etabar { height: 5px; background: var(--line); border-radius: 3px; margin-top: 6px; overflow: hidden; max-width: 420px; }
+.etabar > div { height: 100%; background: var(--accent); transition: width .8s ease; }

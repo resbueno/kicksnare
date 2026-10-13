@@ -14,12 +14,16 @@ def _children_peak_mb() -> float:
     return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
 
 
-def separate_drums(audio: Path, model: str = "htdemucs", segment: int = 7) -> tuple[Path, dict]:
-    """Gera <dir do audio>/drums.wav. Retorna (caminho, métricas)."""
+def separate_drums(audio: Path, model: str = "htdemucs", segment: int = 7, on_progress=None) -> tuple[Path, dict]:
+    """Gera <dir do audio>/drums.wav (e no_drums.wav). `on_progress(0..1)` recebe o avanço do Demucs."""
+    import os
+    import re
+
     out = audio.parent / "drums.wav"
     if out.exists():
         return out, {"cached": True}
 
+    pct = re.compile(r"(\d{1,3})%\|")
     with tempfile.TemporaryDirectory(prefix="kicksnare-demucs-") as tmp:
         cmd = [
             sys.executable, "-m", "demucs",
@@ -28,11 +32,23 @@ def separate_drums(audio: Path, model: str = "htdemucs", segment: int = 7) -> tu
             "-o", tmp, str(audio),
         ]
         started = time.monotonic()
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        tail, last = b"", -1
+        while True:
+            chunk = os.read(proc.stderr.fileno(), 4096)    # o tqdm atualiza com \r, não com \n
+            if not chunk:
+                break
+            tail = (tail + chunk)[-4096:]
+            m = pct.findall(tail.decode("utf-8", "ignore"))
+            if m and int(m[-1]) != last:
+                last = int(m[-1])
+                if on_progress:
+                    on_progress(min(1.0, last / 100))
+        proc.wait()
         elapsed = time.monotonic() - started
-        if result.returncode != 0:
-            tail = "\n".join(result.stderr.strip().splitlines()[-8:])
-            raise RuntimeError(f"demucs falhou:\n{tail}")
+        if proc.returncode != 0:
+            msg = "\n".join(tail.decode("utf-8", "ignore").replace("\r", "\n").strip().splitlines()[-8:])
+            raise RuntimeError(f"demucs falhou:\n{msg}")
         produced = Path(tmp) / model / audio.stem / "drums.wav"
         shutil.move(str(produced), out)
         rest = Path(tmp) / model / audio.stem / "no_drums.wav"

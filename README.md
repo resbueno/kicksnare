@@ -98,3 +98,12 @@ cookie HttpOnly/SameSite, limitador de tentativas de login e de cadastros por IP
 - **Limites** (variáveis de ambiente): `KICKSNARE_MAX_SONGS` (25 por usuário), `KICKSNARE_MAX_ACTIVE` (3
   na fila/processando por usuário), `KICKSNARE_MAX_QUEUE` (20 na fila inteira), `KICKSNARE_MIN_FREE_GB` (15).
   O admin não tem cota por usuário.
+
+## Previsão de tempo e nome da música
+
+- **Previsão de término** (lista e página da música): o Demucs informa o progresso real da separação;
+  as demais etapas usam `fixo + ritmo × duração`, com o ritmo aprendido do histórico do servidor
+  (mediana das últimas músicas) e a velocidade medida na própria música. A espera na fila soma o que
+  falta para os jobs à frente. Quando ainda não há histórico, aparece "estimativa inicial".
+- **Renomear:** botão "Renomear" na lista e "Editar nome" na página da música (`PATCH /api/songs/<id>`).
+  O nome editado vale para os downloads e para o título do MusicXML e não é sobrescrito ao reprocessar.

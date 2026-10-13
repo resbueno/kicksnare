@@ -31,7 +31,16 @@
 <header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare — início"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
 <main>
   <p><a href="__BASE__/">← Músicas</a></p>
-  <h1 id="title">Carregando…</h1>
+  <div class="row" style="align-items:center;gap:10px">
+    <h1 id="title" style="margin:0">Carregando…</h1>
+    <button id="renameBtn" type="button" title="Editar o nome da música" hidden>✎ Editar nome</button>
+  </div>
+  <form id="renameForm" class="row" hidden style="margin-top:6px">
+    <input type="text" id="renameInput" maxlength="120" style="flex:1 1 320px" aria-label="Nome da música">
+    <button class="primary" type="submit">Salvar</button>
+    <button type="button" id="renameCancel">Cancelar</button>
+    <span id="renameMsg" class="small" style="color:var(--err)"></span>
+  </form>
   <div class="row" id="chips"></div>
   <div id="status" class="muted"></div>
 
@@ -111,9 +120,17 @@ function chip(text, cls) { const c = document.createElement("span"); c.className
 async function boot() {
   const song = await (await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}`)).json();
   $("#title").textContent = song.title || id;
+  $("#renameBtn").hidden = false;
   $("#chips").replaceChildren();
   if (song.status !== "done") {
-    $("#status").textContent = song.status === "error" ? "Erro: " + (song.error || "") : (song.message || "Processando…");
+    let txt = song.status === "error" ? "Erro: " + (song.error || "") : (song.message || "Processando…");
+    if (song.eta && song.status !== "error") {
+      const m = Math.round(song.eta.seconds / 60);
+      const quando = new Date(song.eta.finish_at * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+      const dur = song.eta.seconds < 45 ? "menos de 1 min" : `~${m} min`;
+      txt += (song.eta.queue_ahead ? ` · ${song.eta.queue_ahead} na frente na fila` : "") + ` · pronta em ${dur} (${quando})`;
+    }
+    $("#status").textContent = txt;
     setTimeout(boot, 3000);
     return;
   }
@@ -357,6 +374,23 @@ function setTrack(track, keepState) {
   sel.onchange = () => setTrack(sel.value, true);
   if (saved !== "mix") setTrack(saved, false);
 })();
+
+// ---------- renomear ----------
+$("#renameBtn").onclick = () => {
+  $("#renameInput").value = $("#title").textContent;
+  $("#renameForm").hidden = false; $("#renameBtn").hidden = true; $("#renameMsg").textContent = "";
+  $("#renameInput").focus(); $("#renameInput").select();
+};
+$("#renameCancel").onclick = () => { $("#renameForm").hidden = true; $("#renameBtn").hidden = false; };
+$("#renameForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}`, { method: "PATCH",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: $("#renameInput").value }) });
+  if (!r.ok) { let d = r.statusText; try { d = (await r.json()).detail || d; } catch {} $("#renameMsg").textContent = d; return; }
+  const song = await r.json();
+  $("#title").textContent = song.title; document.title = "Kicksnare · " + song.title;
+  $("#renameForm").hidden = true; $("#renameBtn").hidden = false;
+});
 
 // ---------- downloads ----------
 function refreshDownloadLinks() {

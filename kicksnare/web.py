@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import auth as authlib
-from . import db, sheet as sheetlib
+from . import db, eta as etalib, sheet as sheetlib
 from .ingest import DATA_DIR, file_song_id
 from .separate import ensure_no_drums
 from .patterns import (
@@ -330,7 +330,10 @@ def list_songs(mine: bool = False) -> list[dict]:
     """O admin vê as músicas de todos (com `owner`); `?mine=1` restringe às dele."""
     user = _require_user()
     owner = user["id"] if (mine or not user.get("is_admin")) else None
-    return [_fresh(s) for s in db.list_songs(owner)]
+    songs = [_fresh(s) for s in db.list_songs(owner)]
+    if any(s["status"] in ("queued", "running") for s in songs):
+        etalib.annotate(songs, db.active_songs(), db.history())
+    return songs
 
 
 @app.post("/api/songs")
@@ -371,6 +374,38 @@ async def upload(file: UploadFile = File(...)) -> dict:
 
 @app.get("/api/songs/{song_id}")
 def get_song(song_id: str) -> dict:
+    song = _song(song_id)
+    if song["status"] in ("queued", "running"):
+        etalib.annotate([song], db.active_songs(), db.history())
+    return song
+
+
+class Rename(BaseModel):
+    title: str
+
+
+@app.patch("/api/songs/{song_id}")
+def rename_song(song_id: str, body: Rename) -> dict:
+    """Muda o nome exibido (e usado nos downloads). Vale para o dono e para o admin."""
+    song = _song(song_id)
+    title = re.sub(r"[\x00-\x1f\x7f]", " ", body.title or "").strip()
+    title = re.sub(r"\s+", " ", title)
+    if not title:
+        raise HTTPException(400, "o nome não pode ficar vazio")
+    if len(title) > 120:
+        raise HTTPException(400, "nome longo demais (máximo de 120 caracteres)")
+    db.update(song_id, title=title)
+    song_dir = DATA_DIR / song_id
+    meta = song_dir / "meta.json"
+    try:
+        info = json.loads(meta.read_text()) if meta.exists() else {}
+        info["title"] = title
+        meta.write_text(json.dumps(info))
+        if song["status"] == "done" and (song_dir / "measures.json").exists():
+            _, _, _, edited = _load(song_dir)        # o título também vai no MusicXML
+            _rebuild_score(song_dir, edited)
+    except (OSError, ValueError, KeyError):
+        pass
     return _song(song_id)
 
 

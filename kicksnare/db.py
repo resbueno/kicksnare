@@ -53,6 +53,9 @@ def connect():
     cols = {r["name"] for r in con.execute("PRAGMA table_info(songs)")}
     if "owner_id" not in cols:      # migração: músicas existentes ficam sem dono até alguém assumir
         con.execute("ALTER TABLE songs ADD COLUMN owner_id INTEGER")
+    for col, ddl in (("duration", "REAL"), ("stage_started", "REAL"), ("timings", "TEXT"), ("progress", "REAL")):
+        if col not in cols:         # estimativa de tempo: duração do áudio, início da etapa, tempos e progresso
+            con.execute(f"ALTER TABLE songs ADD COLUMN {col} {ddl}")
     ucols = {r["name"] for r in con.execute("PRAGMA table_info(users)")}
     if "is_admin" not in ucols:
         con.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
@@ -67,6 +70,7 @@ def connect():
 def _row(r) -> dict:
     d = dict(r)
     d["stats"] = json.loads(d["stats"]) if d.get("stats") else None
+    d["timings"] = json.loads(d["timings"]) if d.get("timings") else {}
     return d
 
 
@@ -102,6 +106,8 @@ def claim_next() -> dict | None:
 def update(song_id: str, **fields) -> None:
     if "stats" in fields and fields["stats"] is not None:
         fields["stats"] = json.dumps(fields["stats"])
+    if "timings" in fields and fields["timings"] is not None:
+        fields["timings"] = json.dumps(fields["timings"])
     cols = ", ".join(f"{k}=?" for k in fields)
     with connect() as con:
         con.execute(f"UPDATE songs SET {cols} WHERE id=?", (*fields.values(), song_id))
@@ -248,3 +254,23 @@ def set_user_status(user_id: int, status: str) -> None:
         con.execute("UPDATE users SET status=? WHERE id=?", (status, user_id))
         if status != "approved":
             con.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+
+
+def active_songs() -> list[dict]:
+    """Fila inteira (todos os usuários), na ordem em que o worker as pega."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT id, status, stage, created, started, duration, stage_started, progress, timings "
+            "FROM songs WHERE status IN ('queued','running') ORDER BY (status='running') DESC, created"
+        )
+        return [_row(r) for r in rows]
+
+
+def history(limit: int = 15) -> list[dict]:
+    """Últimos jobs concluídos com os tempos de cada etapa (base da estimativa)."""
+    with connect() as con:
+        rows = con.execute(
+            "SELECT duration, timings FROM songs WHERE status='done' AND duration > 0 AND timings IS NOT NULL "
+            "ORDER BY finished DESC LIMIT ?", (limit,)
+        )
+        return [_row(r) for r in rows]
