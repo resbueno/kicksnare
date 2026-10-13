@@ -95,6 +95,7 @@
     <div class="row">
       <label><input type="checkbox" id="editMode"> editar barras de compasso</label>
       <span class="muted small" id="editHelp" hidden>Clique na pauta para <b>adicionar</b> uma barra; clique numa barra vermelha para <b>remover</b>.</span>
+      <a class="btn" id="dlSource" href="#" download>Baixar o PDF enviado</a>
       <button id="replace">Trocar PDF</button>
     </div>
     <div id="summary" class="muted small" style="margin-top:6px"></div>
@@ -363,6 +364,8 @@ function setTrack(track, keepState) {
   sel.onchange = () => setTrack(sel.value, true);
   if (saved !== "mix") setTrack(saved, false);
 })();
+
+$("#dlSource").href = `${API}/sheet/source.pdf`;
 
 boot();
 </script>

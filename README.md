@@ -78,3 +78,10 @@ Este repositório **não inclui** modelos nem dependências; eles são baixados 
 - Demucs (MIT), beat_this (MIT), yt-dlp (Unlicense), OpenSheetMusicDisplay (BSD-3), pypdfium2 (BSD/Apache),
   music21 (BSD). Confira as licenças antes de redistribuir.
 - Baixar áudio do YouTube pode violar os termos do serviço; use apenas com conteúdo seu ou autorizado.
+
+## Downloads
+
+Na página da música: **áudio da faixa escolhida** (original / só bateria / sem bateria, em MP3),
+**partitura em PDF** (gerada no navegador a partir do MusicXML, A4 retrato) e **MusicXML**.
+Na página do PDF: **o PDF enviado**, exatamente como foi enviado.
+API: `.../track/{mix,drums,no_drums}.mp3?download=1`, `.../score.musicxml?download=1`, `.../sheet/source.pdf`.

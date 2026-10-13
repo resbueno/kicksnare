@@ -159,9 +159,20 @@ def retry(song_id: str) -> dict:
 
 
 # ---------- arquivos ----------
+def _download_name(song_id: str, suffix: str, ext: str) -> str:
+    """Nome de arquivo amigável: '<título> - <sufixo>.<ext>' (sem caracteres que quebram sistemas de arquivos)."""
+    title = (_song(song_id).get("title") or song_id)
+    title = re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", title).strip()[:80] or song_id
+    return f"{title} - {suffix}.{ext}"
+
+
 @app.get("/api/songs/{song_id}/score.musicxml")
-def score(song_id: str) -> FileResponse:
-    return FileResponse(_ready(song_id) / "score.musicxml", media_type="application/xml")
+def score(song_id: str, download: bool = False) -> FileResponse:
+    f = _ready(song_id) / "score.musicxml"
+    if download:
+        return FileResponse(f, media_type="application/vnd.recordare.musicxml+xml",
+                            filename=_download_name(song_id, "partitura", "musicxml"))
+    return FileResponse(f, media_type="application/xml")
 
 
 TRACKS = {"mix": ("audio.wav", "audio.mp3"), "drums": ("drums.wav", "drums.mp3"), "no_drums": ("no_drums.wav", "no_drums.mp3")}
@@ -187,8 +198,12 @@ def _ensure_track(song_dir: Path, track: str) -> Path:
 
 
 @app.get("/api/songs/{song_id}/track/{track}.mp3")
-def track_audio(song_id: str, track: str) -> FileResponse:
-    return FileResponse(_ensure_track(_ready(song_id), track), media_type="audio/mpeg")
+def track_audio(song_id: str, track: str, download: bool = False) -> FileResponse:
+    f = _ensure_track(_ready(song_id), track)
+    if download:
+        label = {"mix": "original", "drums": "so a bateria", "no_drums": "sem a bateria"}[track]
+        return FileResponse(f, media_type="audio/mpeg", filename=_download_name(song_id, label, "mp3"))
+    return FileResponse(f, media_type="audio/mpeg")
 
 
 @app.get("/api/songs/{song_id}/audio.mp3")
@@ -278,6 +293,15 @@ async def upload_sheet(song_id: str, file: UploadFile = File(...)) -> dict:
 @app.get("/api/songs/{song_id}/sheet")
 def get_sheet(song_id: str) -> dict:
     return _sheet_state(_ready(song_id))
+
+
+@app.get("/api/songs/{song_id}/sheet/source.pdf")
+def sheet_source(song_id: str) -> FileResponse:
+    """O PDF exatamente como foi enviado."""
+    f = _sheet_dir(_ready(song_id)) / "source.pdf"
+    if not f.exists():
+        raise HTTPException(404, "nenhuma partitura enviada")
+    return FileResponse(f, media_type="application/pdf", filename=_download_name(song_id, "partitura enviada", "pdf"))
 
 
 @app.get("/api/songs/{song_id}/sheet/page/{page}.png")

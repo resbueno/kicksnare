@@ -66,6 +66,13 @@
     </div>
 
     <h2>Partitura</h2>
+    <div class="row" id="downloads">
+      <span class="muted small">Baixar:</span>
+      <a class="btn" id="dlAudio" href="#" download>Áudio (faixa escolhida)</a>
+      <button id="dlPdf" title="Gera um PDF com a partitura inteira">Partitura em PDF</button>
+      <a class="btn" id="dlXml" href="#" download>MusicXML</a>
+      <span id="dlMsg" class="muted small"></span>
+    </div>
     <div class="pager">
       <button id="prev">←</button>
       <span id="range" class="muted"></span>
@@ -349,6 +356,77 @@ function setTrack(track, keepState) {
   sel.onchange = () => setTrack(sel.value, true);
   if (saved !== "mix") setTrack(saved, false);
 })();
+
+// ---------- downloads ----------
+function refreshDownloadLinks() {
+  const track = ($("#track") || {}).value || "mix";
+  $("#dlAudio").href = `${BASE}/api/songs/${encodeURIComponent(id)}/track/${track}.mp3?download=1`;
+  $("#dlXml").href = `${BASE}/api/songs/${encodeURIComponent(id)}/score.musicxml?download=1`;
+}
+$("#track").addEventListener("change", refreshDownloadLinks);
+refreshDownloadLinks();
+
+function loadScript(src) {
+  return new Promise((ok, fail) => {
+    const s = document.createElement("script"); s.src = src; s.onload = ok;
+    s.onerror = () => fail(new Error("não consegui carregar " + src)); document.head.append(s);
+  });
+}
+
+// PDF no navegador: o OSMD pagina em A4 retrato (SVG por página) e o svg2pdf converte cada página.
+async function exportPdf() {
+  const btn = $("#dlPdf"), msg = $("#dlMsg");
+  btn.disabled = true; msg.textContent = "Gerando PDF…";
+  const holder = document.createElement("div");
+  holder.style.cssText = "position:fixed;left:-99999px;top:0;width:1000px";
+  document.body.append(holder);
+  try {
+    if (!window.jspdf) await loadScript("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js");
+    if (!(window.svg2pdf || (window.jspdf && window.jspdf.jsPDF.API.svg))) {
+      await loadScript("https://cdn.jsdelivr.net/npm/svg2pdf.js@2.2.3/dist/svg2pdf.umd.min.js");
+    }
+    const xml = await (await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/score.musicxml?t=${Date.now()}`)).text();
+    const o = new opensheetmusicdisplay.OpenSheetMusicDisplay(holder, {
+      autoResize: false, pageFormat: "A4 P", drawTitle: false, drawSubtitle: false, drawComposer: false, drawPartNames: false,
+      drawingParameters: "default",
+    });
+    await o.load(xml);
+    o.zoom = 0.8;
+    o.render();
+    const svgs = [...holder.querySelectorAll("svg")];
+    if (!svgs.length) throw new Error("a partitura não gerou páginas");
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ unit: "pt", format: "a4", orientation: "portrait", compress: true });
+    const W = pdf.internal.pageSize.getWidth(), H = pdf.internal.pageSize.getHeight();
+    const M = 30, HEAD = 30;                                  // margem e faixa do título (só na 1ª página)
+    const title = ($("h1").textContent || "Partitura").trim();
+    for (let i = 0; i < svgs.length; i++) {
+      msg.textContent = `Gerando PDF… página ${i + 1} de ${svgs.length}`;
+      if (i > 0) pdf.addPage();
+      const vb = svgs[i].viewBox.baseVal;
+      const w = vb && vb.width ? vb.width : svgs[i].getBoundingClientRect().width;
+      const h = vb && vb.height ? vb.height : svgs[i].getBoundingClientRect().height;
+      const scale = Math.min((W - 2 * M) / w, (H - 2 * M - HEAD) / h);
+      await (window.svg2pdf.svg2pdf || window.svg2pdf)(svgs[i], pdf, {
+        x: M + ((W - 2 * M) - w * scale) / 2, y: M + HEAD, width: w * scale, height: h * scale });
+      pdf.setFont("helvetica", "normal"); pdf.setTextColor(90);
+      pdf.setFontSize(8); pdf.text(`Kicksnare · ${i + 1}/${svgs.length}`, W - M, H - 14, { align: "right" });
+    }
+    pdf.setPage(1); pdf.setTextColor(0);
+    let fs = 15; pdf.setFont("helvetica", "bold"); pdf.setFontSize(fs);
+    while (pdf.getTextWidth(title) > W - 2 * M && fs > 8) pdf.setFontSize(--fs);
+    pdf.text(title, W / 2, M + 12, { align: "center" });
+    const name = title.replace(/[\\/:*?"<>|]/g, " ").slice(0, 80) + " - partitura.pdf";
+    const buf = pdf.output("arraybuffer"); window.__lastPdf = { pages: svgs.length, bytes: buf.byteLength, buffer: buf };
+    pdf.save(name);
+    msg.textContent = `PDF gerado (${svgs.length} página${svgs.length > 1 ? "s" : ""}).`;
+  } catch (e) {
+    msg.textContent = "Não foi possível gerar o PDF: " + e.message;
+  } finally {
+    holder.remove(); btn.disabled = false;
+  }
+}
+$("#dlPdf").onclick = exportPdf;
 
 boot();
 </script>
