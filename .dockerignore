@@ -1,0 +1,7 @@
+.git
+.venv
+.venv-ytdlp
+data
+examples
+__pycache__
+*.pyc
