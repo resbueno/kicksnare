@@ -71,6 +71,7 @@
         <div class="ctl">
           <span class="seg" id="metroSeg" role="group" aria-label="Metrônomo">
             <button type="button" data-m="off" title="Desligado" aria-label="Metrônomo desligado" style="font-size:.85rem">off</button>
+            <button type="button" data-m="4" title="Em semínimas (só os tempos)" aria-label="Metrônomo em semínimas">♩</button>
             <button type="button" data-m="8" title="Em colcheias" aria-label="Metrônomo em colcheias">♪</button>
             <button type="button" data-m="16" title="Em semicolcheias" aria-label="Metrônomo em semicolcheias">♬</button>
           </span>
@@ -387,7 +388,7 @@ $("#follow").onchange = () => syncCursor(true);
 // ---------- metrônomo ----------
 // Cliques agendados no Web Audio a partir da grade de tempos detectada (timing.beats), então
 // acompanham as variações de andamento da gravação. Tempo 1 do compasso mais agudo, subdivisões mais suaves.
-let metroCtx = null, metroFrom = null, metroLast = "8";
+let metroCtx = null, metroFrom = null, metroLast = "4";
 const metroMode = () => (document.querySelector('#metroSeg button[aria-pressed="true"]') || {}).dataset?.m || "off";
 function metroDownbeats() {
   if (!timing.downbeats) {
@@ -409,7 +410,7 @@ function metroClick(at, level) {   // level 0 = tempo 1, 1 = tempo, 2 = subdivis
 function metroTick() {
   const mode = metroMode();
   if (!timing || !metroCtx || audio.paused || mode === "off") { metroFrom = null; return; }
-  const sub = mode === "16" ? 4 : 2, rate = audio.playbackRate || 1;
+  const sub = { 4: 1, 8: 2, 16: 4 }[mode] || 1, rate = audio.playbackRate || 1;
   const ctxNow = metroCtx.currentTime, mediaNow = audio.currentTime, horizon = mediaNow + 0.15 * rate;
   if (metroFrom === null || metroFrom < mediaNow - 0.3) metroFrom = mediaNow;
   const b = timing.beats, off = offsetSec(), down = metroDownbeats();
