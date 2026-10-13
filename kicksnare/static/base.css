@@ -64,3 +64,12 @@ button.danger:hover { border-color: var(--err); }
 
 .etabar { height: 5px; background: var(--line); border-radius: 3px; margin-top: 6px; overflow: hidden; max-width: 420px; }
 .etabar > div { height: 100%; background: var(--accent); transition: width .8s ease; }
+
+[hidden] { display: none !important; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; vertical-align: middle; }
+.seg button { border: 0; border-radius: 0; padding: 6px 12px; font-size: 1.1rem; line-height: 1; background: var(--panel); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); }
+.nodrum { position: relative; display: inline-block; }
+.nodrum::after { content: ""; position: absolute; left: -2px; right: -2px; top: 50%; height: 2px;
+  background: currentColor; transform: rotate(-45deg); }

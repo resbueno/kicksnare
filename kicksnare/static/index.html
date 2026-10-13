@@ -92,15 +92,15 @@ function render(songs) {
       const inp = document.createElement("input"); inp.type = "text"; inp.maxLength = 120; inp.value = s.title || "";
       inp.style.cssText = "flex:1 1 220px;min-width:0";
       const save = async () => {
-        const v = inp.value.trim(); if (!v || v === s.title) { load(); return; }
+        const v = inp.value.trim(); renaming = false; if (!v || v === s.title) { load(); return; }
         const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(s.id)}`, { method: "PATCH",
           headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: v }) });
         if (!r.ok) { try { alert((await r.json()).detail); } catch {} }
         load();
       };
-      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); if (e.key === "Escape") load(); });
-      inp.addEventListener("blur", save);
+      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); if (e.key === "Escape") { renaming = false; load(); } });
       title.replaceWith(inp); inp.focus(); inp.select(); renaming = true;
+      rn.textContent = "Salvar"; rn.className = "primary"; rn.onclick = save;
     };
     right.append(rn);
     if (s.status !== "running") {
@@ -153,7 +153,7 @@ fetch(BASE + "/api/auth/me").then((r) => r.json()).then((u) => {
   load();
 }).catch(() => {});
 $("#mine").onchange = load;
-load(); setInterval(() => { if (!renaming || !document.activeElement || document.activeElement.tagName !== 'INPUT') { renaming = false; load(); } }, 3000);
+load(); setInterval(() => { if (!renaming) load(); }, 3000);
 </script>
 </body>
 </html>

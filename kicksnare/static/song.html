@@ -47,13 +47,14 @@
   <div id="ready" hidden>
     <audio id="player" controls preload="metadata" style="width:100%;margin-top:16px"></audio>
     <div class="row practice">
-      <label>Faixa
-        <select id="track">
-          <option value="mix">Música original</option>
-          <option value="drums">Só a bateria</option>
-          <option value="no_drums">Sem a bateria</option>
-        </select>
-      </label>
+      <span>Faixa
+        <input type="hidden" id="track" value="mix">
+        <span class="seg" id="trackSeg" role="group" aria-label="Faixa">
+          <button type="button" data-track="mix" title="Música original" aria-label="Música original">🎵</button>
+          <button type="button" data-track="drums" title="Só a bateria" aria-label="Só a bateria">🥁</button>
+          <button type="button" data-track="no_drums" title="Sem a bateria" aria-label="Sem a bateria"><span class="nodrum">🥁</span></button>
+        </span>
+      </span>
       <label>Velocidade
         <select id="speed">
           <option value="0.5">50%</option><option value="0.65">65%</option>
@@ -366,11 +367,19 @@ function setTrack(track, keepState) {
   }
   try { localStorage.setItem("ks:track", track); } catch {}
 }
+function syncSeg() {
+  const v = $("#track").value;
+  document.querySelectorAll("#trackSeg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.track === v)));
+}
+document.querySelectorAll("#trackSeg button").forEach((b) => b.onclick = () => {
+  const t = $("#track"); if (t.value === b.dataset.track) return;
+  t.value = b.dataset.track; syncSeg(); t.dispatchEvent(new Event("change"));
+});
 (function initTrack() {
   let saved = "mix";
   try { saved = localStorage.getItem("ks:track") || "mix"; } catch {}
   const sel = $("#track"); if (!sel) return;
-  sel.value = saved;
+  sel.value = saved; syncSeg();
   sel.onchange = () => setTrack(sel.value, true);
   if (saved !== "mix") setTrack(saved, false);
 })();
