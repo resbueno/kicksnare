@@ -67,6 +67,18 @@
         </div>
       </div>
       <div class="field">
+        <span class="lbl" title="Atalho: tecla M liga/desliga">Metrônomo</span>
+        <div class="ctl">
+          <span class="seg" id="metroSeg" role="group" aria-label="Metrônomo">
+            <button type="button" data-m="off" title="Desligado" aria-label="Metrônomo desligado" style="font-size:.85rem">off</button>
+            <button type="button" data-m="8" title="Em colcheias" aria-label="Metrônomo em colcheias">♪</button>
+            <button type="button" data-m="16" title="Em semicolcheias" aria-label="Metrônomo em semicolcheias">♬</button>
+          </span>
+          <input type="range" id="metroVol" min="0" max="1" step="0.05" value="0.6" style="width:72px;accent-color:var(--accent)"
+            title="Volume do metrônomo" aria-label="Volume do metrônomo">
+        </div>
+      </div>
+      <div class="field">
         <label class="lbl" for="goto">Ir para compasso</label>
         <div class="ctl"><input type="number" id="goto" min="1" value="1" style="width:5em">
           <button id="gotoBtn" class="sm">Ir</button></div>
@@ -371,6 +383,76 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault(); audio.paused ? audio.play() : audio.pause();
 });
 $("#follow").onchange = () => syncCursor(true);
+
+// ---------- metrônomo ----------
+// Cliques agendados no Web Audio a partir da grade de tempos detectada (timing.beats), então
+// acompanham as variações de andamento da gravação. Tempo 1 do compasso mais agudo, subdivisões mais suaves.
+let metroCtx = null, metroFrom = null, metroLast = "8";
+const metroMode = () => (document.querySelector('#metroSeg button[aria-pressed="true"]') || {}).dataset?.m || "off";
+function metroDownbeats() {
+  if (!timing.downbeats) {
+    const s = new Set(); let acc = 0;
+    for (const bar of timing.bars) { s.add(Math.round(acc)); acc += bar.beats; }
+    timing.downbeats = s;
+  }
+  return timing.downbeats;
+}
+function metroClick(at, level) {   // level 0 = tempo 1, 1 = tempo, 2 = subdivisão
+  const o = metroCtx.createOscillator(), g = metroCtx.createGain();
+  o.frequency.value = [1800, 1200, 800][level];
+  const vol = parseFloat($("#metroVol").value) * [1, 0.7, 0.35][level];
+  g.gain.setValueAtTime(Math.max(vol, 0.0001), at);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + 0.035);
+  o.connect(g).connect(metroCtx.destination);
+  o.start(at); o.stop(at + 0.05);
+}
+function metroTick() {
+  const mode = metroMode();
+  if (!timing || !metroCtx || audio.paused || mode === "off") { metroFrom = null; return; }
+  const sub = mode === "16" ? 4 : 2, rate = audio.playbackRate || 1;
+  const ctxNow = metroCtx.currentTime, mediaNow = audio.currentTime, horizon = mediaNow + 0.15 * rate;
+  if (metroFrom === null || metroFrom < mediaNow - 0.3) metroFrom = mediaNow;
+  const b = timing.beats, off = offsetSec(), down = metroDownbeats();
+  for (let i = Math.max(0, Math.floor(timeToQ(metroFrom - off)) - 1); i < b.length - 1; i++) {
+    const t0 = b[i] + off, step = (b[i + 1] - b[i]) / sub;
+    if (t0 >= horizon) break;
+    for (let k = 0; k < sub; k++) {
+      const t = t0 + k * step;
+      if (t >= metroFrom && t < horizon && t > mediaNow - 0.02) metroClick(ctxNow + (t - mediaNow) / rate, k ? 2 : (down.has(i) ? 0 : 1));
+    }
+  }
+  metroFrom = horizon;
+}
+function setMetro(mode) {
+  document.querySelectorAll("#metroSeg button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.m === mode)));
+  if (mode !== "off") {
+    metroLast = mode;
+    metroCtx = metroCtx || new (window.AudioContext || window.webkitAudioContext)();
+    metroCtx.resume();
+  }
+  metroFrom = null; store.set("metro", mode);
+}
+document.querySelectorAll("#metroSeg button").forEach((x) => x.onclick = () => setMetro(x.dataset.m));
+$("#metroVol").value = store.get("metroVol", "0.6");
+$("#metroVol").oninput = () => store.set("metroVol", $("#metroVol").value);
+for (const ev of ["play", "seeked", "ratechange", "pause"]) audio.addEventListener(ev, () => {
+  metroFrom = null;
+  if (ev === "play" && metroCtx) metroCtx.resume();
+});
+$("#offset").addEventListener("change", () => { metroFrom = null; });
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "KeyM" || e.ctrlKey || e.metaKey || e.altKey || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  setMetro(metroMode() === "off" ? metroLast : "off");
+});
+setInterval(metroTick, 25);
+(() => {   // lembra a escolha, mas o áudio só pode nascer num gesto do usuário: cria no 1º play
+  const saved = store.get("metro", "off");
+  document.querySelectorAll("#metroSeg button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.m === saved)));
+  if (saved !== "off") {
+    metroLast = saved;
+    audio.addEventListener("play", () => { metroCtx = metroCtx || new (window.AudioContext || window.webkitAudioContext)(); metroCtx.resume(); });
+  }
+})();
 
 
 // ---------- faixa: original / só bateria / sem bateria ----------
