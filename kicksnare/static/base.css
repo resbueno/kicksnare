@@ -18,7 +18,7 @@ a { color: var(--accent); }
 .muted { color: var(--muted); }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-input[type=text], input[type=url] { flex: 1 1 260px; min-width: 0; padding: 10px 12px; font: inherit;
+input[type=text], input[type=url], input[type=password] { flex: 1 1 260px; min-width: 0; padding: 10px 12px; font: inherit;
   color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
 button, .btn { font: inherit; padding: 9px 14px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--panel); color: var(--text); cursor: pointer; }
@@ -58,3 +58,6 @@ button:disabled { opacity: .5; cursor: default; }
 .msg-err { color: var(--err); font-size: .9rem; min-height: 1.2em; margin-top: 10px; }
 button.danger { color: var(--err); border-color: var(--line); }
 button.danger:hover { border-color: var(--err); }
+.userbox .who { color: #e6e6e0; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.userbox .pwlink { color: #fb923c; font-size: .85rem; }
+@media (max-width: 520px) { .userbox .who { display: none; } }

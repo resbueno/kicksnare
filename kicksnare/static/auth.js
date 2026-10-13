@@ -5,8 +5,9 @@
   window.fetch = async (...args) => {
     const r = await orig(...args);
     const url = String(args[0] && args[0].url ? args[0].url : args[0]);
-    if (r.status === 401 && !url.includes("/api/auth/login") && !url.includes("/api/auth/register")
-        && !location.pathname.endsWith("/login")) {
+    // 401 em login/cadastro/troca de senha é "credencial errada" (a tela mostra o erro), não sessão expirada
+    const credentialCall = ["/api/auth/login", "/api/auth/register", "/api/auth/password"].some((p) => url.includes(p));
+    if (r.status === 401 && !credentialCall && !location.pathname.endsWith("/login")) {
       location.href = base + "/login";
     }
     return r;
@@ -23,15 +24,17 @@
     } catch { return; }
     const box = document.createElement("div");
     box.className = "userbox";
-    const who = document.createElement("a");
-    who.href = base + "/account"; who.textContent = me.username; who.title = "Minha conta";
+    const who = document.createElement("span");
+    who.className = "who"; who.textContent = me.username + (me.is_admin ? " (admin)" : "");
+    const pw = document.createElement("a");
+    pw.className = "pwlink"; pw.href = base + "/account"; pw.textContent = "Alterar senha";
     const out = document.createElement("button");
     out.type = "button"; out.textContent = "Sair";
     out.onclick = async () => {
       await orig(base + "/api/auth/logout", { method: "POST" });
       location.href = base + "/login";
     };
-    box.append(who, out);
+    box.append(who, pw, out);
     bar.append(box);
   });
 })();
