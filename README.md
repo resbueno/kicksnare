@@ -87,7 +87,8 @@ API: `.../track/{mix,drums,no_drums}.mp3?download=1`, `.../score.musicxml?downlo
 
 ## Contas e acesso
 
-Cadastro aberto: qualquer pessoa cria uma conta e vê **somente** as músicas que ela mesma enviou
+Cadastro com **aprovação do administrador**: qualquer pessoa pede uma conta, que fica *aguardando* até o admin
+aprovar em `/admin/users` (também dá para recusar, bloquear e reativar). Quem foi aprovado vê **somente** as músicas que ele mesmo enviou
 (o mesmo vídeo enviado por duas pessoas vira duas músicas independentes). Senhas com scrypt, sessão em
 cookie HttpOnly/SameSite, limitador de tentativas de login e de cadastros por IP.
 

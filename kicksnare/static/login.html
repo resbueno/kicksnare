@@ -14,10 +14,10 @@
 <main>
   <div class="authcard panel">
     <h1>Kicksnare</h1>
-    <p class="muted">Entre para ver as suas músicas, ou crie uma conta. Cada conta enxerga somente o que ela mesma enviar.</p>
+    <p class="muted">Entre para ver as suas músicas, ou peça uma conta (o administrador precisa aprovar). Cada conta enxerga somente o que ela mesma enviar.</p>
     <div class="tabs">
       <button type="button" id="tabLogin" class="on">Entrar</button>
-      <button type="button" id="tabSignup">Criar conta</button>
+      <button type="button" id="tabSignup">Pedir conta</button>
     </div>
     <form id="form" autocomplete="on">
       <label for="u">Usuário</label>
@@ -26,6 +26,7 @@
       <input type="password" id="p" name="password" autocomplete="current-password" required>
       <div id="hint" class="muted" style="font-size:.85rem;margin-top:6px" hidden>
         Usuário: 3 a 32 caracteres (letras minúsculas, números, ponto, hífen ou sublinhado). Senha: mínimo de 8 caracteres.</div>
+      <div id="info" role="status" style="color:var(--ok);font-size:.9rem;margin-top:10px"></div>
       <div class="msg-err" id="err" role="alert"></div>
       <button class="primary" type="submit" id="go" style="width:100%;margin-top:8px">Entrar</button>
     </form>
@@ -39,10 +40,10 @@ function setMode(m) {
   mode = m;
   $("#tabLogin").classList.toggle("on", m === "login");
   $("#tabSignup").classList.toggle("on", m === "signup");
-  $("#go").textContent = m === "login" ? "Entrar" : "Criar conta";
+  $("#go").textContent = m === "login" ? "Entrar" : "Pedir conta";
   $("#p").autocomplete = m === "login" ? "current-password" : "new-password";
   $("#hint").hidden = m === "login";
-  $("#err").textContent = "";
+  $("#err").textContent = ""; $("#info").textContent = "";
 }
 $("#tabLogin").onclick = () => setMode("login");
 $("#tabSignup").onclick = () => setMode("signup");
@@ -56,6 +57,13 @@ $("#form").addEventListener("submit", async (ev) => {
     if (!r.ok) {
       let d = r.statusText; try { d = (await r.json()).detail || d; } catch {}
       $("#err").textContent = d; return;
+    }
+    const d = await r.json();
+    if (d.pending) {                       // cadastro novo: aguarda aprovação do administrador
+      setMode("login");
+      $("#p").value = "";
+      $("#info").textContent = d.message;
+      return;
     }
     location.href = BASE + "/";
   } catch (e) { $("#err").textContent = "Falha de conexão: " + e.message; }

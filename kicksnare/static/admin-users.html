@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kicksnare · Usuários</title>
+<link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
+<link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
+<meta name="theme-color" content="#16181d">
+<link rel="stylesheet" href="__BASE__/static/base.css">
+<style>
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  th, td { text-align: left; padding: 8px 6px; border-top: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 500; font-size: .8rem; border-top: 0; }
+  td.act { white-space: nowrap; text-align: right; }
+  td.act button { margin-left: 6px; padding: 5px 10px; font-size: .85rem; }
+  .st-pending { color: var(--warn); } .st-approved { color: var(--ok); } .st-rejected, .st-blocked { color: var(--err); }
+</style>
+</head>
+<body>
+<header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare — início"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
+<main>
+  <p><a href="__BASE__/">← Músicas</a></p>
+  <h1>Usuários</h1>
+  <p class="muted">Quem pede conta fica <b>aguardando</b> até você aprovar. Bloquear encerra as sessões na hora.</p>
+  <div class="panel" id="box"><span class="muted">Carregando…</span></div>
+  <div id="msg" class="small muted" style="margin-top:8px"></div>
+</main>
+<script src="__BASE__/static/auth.js" data-base="__BASE__"></script>
+<script>
+const BASE = "__BASE__";
+const $ = (s) => document.querySelector(s);
+const LABEL = { pending: "aguardando", approved: "ativo", rejected: "recusado", blocked: "bloqueado" };
+const fmt = (t) => new Date(t * 1000).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+
+async function setStatus(id, status) {
+  const r = await fetch(`${BASE}/api/admin/users/${id}/status`, { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) });
+  if (!r.ok) { let d = r.statusText; try { d = (await r.json()).detail || d; } catch {} $("#msg").textContent = d; }
+  load();
+}
+
+function btn(text, cls, fn) {
+  const b = document.createElement("button"); b.textContent = text; if (cls) b.className = cls; b.onclick = fn; return b;
+}
+
+async function load() {
+  const r = await fetch(`${BASE}/api/admin/users`);
+  if (!r.ok) { $("#box").textContent = "Sem permissão."; return; }
+  const users = await r.json();
+  const t = document.createElement("table");
+  t.innerHTML = "<tr><th>Usuário</th><th>Situação</th><th>Cadastro</th><th>Músicas</th><th></th></tr>";
+  users.forEach((u) => {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td"); name.textContent = u.username + (u.is_admin ? " (admin)" : "");
+    const st = document.createElement("td"); st.className = "st-" + u.status; st.textContent = LABEL[u.status] || u.status;
+    const cr = document.createElement("td"); cr.textContent = fmt(u.created);
+    const sg = document.createElement("td"); sg.textContent = u.songs;
+    const act = document.createElement("td"); act.className = "act";
+    if (!u.is_admin) {
+      if (u.status === "pending") { act.append(btn("Aprovar", "primary", () => setStatus(u.id, "approved")), btn("Recusar", "danger", () => setStatus(u.id, "rejected"))); }
+      else if (u.status === "approved") { act.append(btn("Bloquear", "danger", () => setStatus(u.id, "blocked"))); }
+      else { act.append(btn("Reativar", "", () => setStatus(u.id, "approved"))); }
+    }
+    tr.append(name, st, cr, sg, act); t.append(tr);
+  });
+  $("#box").replaceChildren(users.length ? t : document.createTextNode("Nenhum usuário."));
+}
+load(); setInterval(load, 10000);
+</script>
+</body>
+</html>

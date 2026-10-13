@@ -34,7 +34,15 @@
       await orig(base + "/api/auth/logout", { method: "POST" });
       location.href = base + "/login";
     };
-    box.append(who, pw, out);
+    if (me.is_admin) {
+      const adm = document.createElement("a");
+      adm.className = "pwlink"; adm.href = base + "/admin/users";
+      adm.textContent = me.pending_count ? `Usuários (${me.pending_count} aguardando)` : "Usuários";
+      if (me.pending_count) adm.style.fontWeight = "700";
+      box.append(who, adm, pw, out);
+    } else {
+      box.append(who, pw, out);
+    }
     bar.append(box);
   });
 })();

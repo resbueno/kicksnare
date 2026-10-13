@@ -161,6 +161,12 @@ def account_page() -> HTMLResponse:
     return _page("account.html")
 
 
+@app.get("/admin/users", include_in_schema=False)
+def admin_users_page() -> HTMLResponse:
+    _require_admin()
+    return _page("admin-users.html")
+
+
 # ---------- contas ----------
 class Credentials(BaseModel):
     username: str
@@ -190,12 +196,13 @@ def register(body: Credentials, request: Request, response: Response) -> dict:
     err = authlib.validate_username(username) or authlib.validate_password(body.password)
     if err:
         raise HTTPException(400, err)
-    uid = db.create_user(username, authlib.hash_password(body.password))
+    uid = db.create_user(username, authlib.hash_password(body.password), status="pending")
     if uid is None:
         raise HTTPException(409, "este usuário já existe")
     authlib.signups.hit(ip)
-    _start_session(response, request, uid)
-    return {"username": username}
+    # sem sessão: o acesso só começa depois que o administrador aprovar
+    return {"username": username, "pending": True,
+            "message": "Cadastro enviado. Você poderá entrar assim que o administrador aprovar."}
 
 
 @app.post("/api/auth/login")
@@ -207,6 +214,11 @@ def login(body: Credentials, request: Request, response: Response) -> dict:
     user = db.get_user_by_name(username)
     if user and authlib.verify_password(body.password, user["pw_hash"]):
         authlib.login_failures.clear(key)
+        # o estado da conta só é revelado a quem sabe a senha
+        if user.get("status", "approved") == "pending":
+            raise HTTPException(403, "Sua conta está aguardando a aprovação do administrador.")
+        if user.get("status") in ("rejected", "blocked"):
+            raise HTTPException(403, "Esta conta não está autorizada a acessar.")
         _start_session(response, request, user["id"])
         return {"username": user["username"]}
     if not user:
@@ -227,7 +239,42 @@ def logout(request: Request, response: Response) -> dict:
 @app.get("/api/auth/me")
 def me() -> dict:
     u = _require_user()
-    return {"username": u["username"], "is_admin": bool(u.get("is_admin"))}
+    out = {"username": u["username"], "is_admin": bool(u.get("is_admin"))}
+    if u.get("is_admin"):
+        out["pending_count"] = db.count_pending()
+    return out
+
+
+# ---------- administração de usuários ----------
+def _require_admin() -> dict:
+    u = _require_user()
+    if not u.get("is_admin"):
+        raise HTTPException(403, "apenas o administrador")
+    return u
+
+
+class StatusChange(BaseModel):
+    status: str   # approved | rejected | blocked | pending
+
+
+@app.get("/api/admin/users")
+def admin_users() -> list[dict]:
+    _require_admin()
+    return db.list_users()
+
+
+@app.post("/api/admin/users/{user_id}/status")
+def admin_set_status(user_id: int, body: StatusChange) -> dict:
+    admin = _require_admin()
+    if body.status not in db.USER_STATUSES:
+        raise HTTPException(400, "status inválido")
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(404, "usuário não encontrado")
+    if target["id"] == admin["id"] or target.get("is_admin"):
+        raise HTTPException(400, "não é possível alterar a conta de um administrador")
+    db.set_user_status(user_id, body.status)
+    return {"id": user_id, "status": body.status}
 
 
 @app.post("/api/auth/password")
@@ -697,6 +744,7 @@ def _bootstrap_admin() -> None:
     uid = user["id"] if user else db.create_user(name, authlib.hash_password(pw), is_admin=True)
     if uid is not None:
         db.set_admin(uid, True)
+        db.set_user_status(uid, "approved")
         db.assign_orphans(uid)
 
 

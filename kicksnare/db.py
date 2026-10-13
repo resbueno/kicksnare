@@ -56,6 +56,8 @@ def connect():
     ucols = {r["name"] for r in con.execute("PRAGMA table_info(users)")}
     if "is_admin" not in ucols:
         con.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+    if "status" not in ucols:       # contas anteriores à aprovação continuam ativas
+        con.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'")
     try:
         yield con
     finally:
@@ -156,13 +158,16 @@ def set_admin(user_id: int, is_admin: bool = True) -> None:
         con.execute("UPDATE users SET is_admin=? WHERE id=?", (1 if is_admin else 0, user_id))
 
 
-def create_user(username: str, pw_hash: str, is_admin: bool = False) -> int | None:
+USER_STATUSES = ("pending", "approved", "rejected", "blocked")
+
+
+def create_user(username: str, pw_hash: str, is_admin: bool = False, status: str = "approved") -> int | None:
     """Retorna o id, ou None se o nome já existe."""
     with connect() as con:
         try:
             cur = con.execute(
-                "INSERT INTO users(username, pw_hash, created, is_admin) VALUES(?,?,?,?)",
-                (username, pw_hash, time.time(), 1 if is_admin else 0),
+                "INSERT INTO users(username, pw_hash, created, is_admin, status) VALUES(?,?,?,?,?)",
+                (username, pw_hash, time.time(), 1 if is_admin else 0, status),
             )
             return int(cur.lastrowid)
         except sqlite3.IntegrityError:
@@ -195,7 +200,7 @@ def user_for_session(token_hash: str) -> dict | None:
     with connect() as con:
         r = con.execute(
             "SELECT u.id, u.username, u.is_admin FROM sessions s JOIN users u ON u.id = s.user_id "
-            "WHERE s.token_hash=? AND s.expires > ?",
+            "WHERE s.token_hash=? AND s.expires > ? AND u.status='approved'",
             (token_hash, time.time()),
         ).fetchone()
         return dict(r) if r else None
@@ -212,3 +217,34 @@ def requeue_interrupted() -> int:
         return con.execute(
             "UPDATE songs SET status='queued', message='Reenfileirado após reinício' WHERE status='running'"
         ).rowcount
+
+
+def list_users() -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            "SELECT u.id, u.username, u.created, u.is_admin, u.status, "
+            "(SELECT COUNT(*) FROM songs WHERE owner_id = u.id) AS songs "
+            "FROM users u ORDER BY (u.status='pending') DESC, u.created DESC"
+        )
+        return [dict(r) for r in rows]
+
+
+def count_pending() -> int:
+    with connect() as con:
+        return con.execute("SELECT COUNT(*) FROM users WHERE status='pending'").fetchone()[0]
+
+
+def get_user(user_id: int) -> dict | None:
+    with connect() as con:
+        r = con.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return dict(r) if r else None
+
+
+def set_user_status(user_id: int, status: str) -> None:
+    """Fora de 'approved' o usuário perde as sessões abertas na hora."""
+    if status not in USER_STATUSES:
+        raise ValueError(status)
+    with connect() as con:
+        con.execute("UPDATE users SET status=? WHERE id=?", (status, user_id))
+        if status != "approved":
+            con.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
