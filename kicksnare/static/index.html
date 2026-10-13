@@ -7,28 +7,31 @@
 <link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
 <link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
 <meta name="theme-color" content="#16181d">
-<link rel="stylesheet" href="__BASE__/static/base.css?v=2">
+<link rel="stylesheet" href="__BASE__/static/base.css?v=3">
 </head>
 <body>
 <header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare — início"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
 <main>
   <h1>Kicksnare</h1>
-  <p class="muted">Cole um link do YouTube ou envie um arquivo de áudio. A bateria é isolada e transcrita em partitura.</p>
+  <p class="lead">Cole um link do YouTube ou envie um arquivo de áudio. A bateria é isolada e transcrita em partitura.</p>
 
   <div class="panel">
     <form id="add" class="row">
       <input type="url" id="url" placeholder="https://www.youtube.com/watch?v=..." required>
       <button class="primary" type="submit">Adicionar</button>
     </form>
-    <div class="row" style="margin-top:10px">
-      <label class="btn" for="file">Enviar arquivo de áudio</label>
+    <div class="row" style="margin-top:14px">
+      <span class="muted small">ou</span>
+      <label class="btn sm" for="file">Enviar arquivo de áudio</label>
       <input id="file" type="file" accept="audio/*,video/*" hidden>
-      <span id="msg" class="muted"></span>
+      <span id="msg" class="muted small"></span>
     </div>
   </div>
 
-  <h2>Músicas</h2>
-  <label id="mineWrap" class="muted small" hidden style="display:none"><input type="checkbox" id="mine"> só as minhas</label>
+  <div class="row" style="justify-content:space-between;margin:48px 0 16px">
+    <h2 style="margin:0">Músicas</h2>
+    <label id="mineWrap" class="muted small" hidden style="display:none"><input type="checkbox" id="mine">só as minhas</label>
+  </div>
   <div class="panel" id="list"><span class="muted">Carregando…</span></div>
 </main>
 <script src="__BASE__/static/auth.js" data-base="__BASE__"></script>
