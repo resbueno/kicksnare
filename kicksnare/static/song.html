@@ -66,7 +66,7 @@
           </select>
         </div>
       </div>
-      <div class="field">
+      <div class="field wide">
         <span class="lbl" title="Atalho: tecla M liga/desliga">Metrônomo</span>
         <div class="ctl">
           <span class="seg" id="metroSeg" role="group" aria-label="Metrônomo">
@@ -75,8 +75,13 @@
             <button type="button" data-m="8" title="Em colcheias" aria-label="Metrônomo em colcheias">♪</button>
             <button type="button" data-m="16" title="Em semicolcheias" aria-label="Metrônomo em semicolcheias">♬</button>
           </span>
-          <input type="range" id="metroVol" min="0" max="1" step="0.05" value="0.6" style="width:72px;accent-color:var(--accent)"
-            title="Volume do metrônomo" aria-label="Volume do metrônomo">
+          <label class="muted small" title="Volume do metrônomo (acima de 100% passa por um limitador)">vol
+            <input type="range" id="metroVol" min="0" max="4" step="0.1" value="1" style="width:84px;accent-color:var(--accent);vertical-align:middle"
+              aria-label="Volume do metrônomo"></label>
+          <span id="metroVolTxt" class="muted small" style="min-width:3.2em">100%</span>
+          <label class="muted small" title="Posição do clique entre esquerda e direita (duplo clique centraliza)">E
+            <input type="range" id="metroPan" min="-1" max="1" step="0.1" value="0" style="width:72px;accent-color:var(--accent);vertical-align:middle"
+              aria-label="Pan do metrônomo"> D</label>
         </div>
       </div>
       <div class="field">
@@ -398,14 +403,35 @@ function metroDownbeats() {
   }
   return timing.downbeats;
 }
+// cliques → volume geral → pan → limitador → saída (o limitador deixa passar de 100% sem distorcer)
+let metroBus = null, metroPanner = null;
+function metroEnsure() {
+  if (!metroCtx) {
+    metroCtx = new (window.AudioContext || window.webkitAudioContext)();
+    metroBus = metroCtx.createGain();
+    metroPanner = metroCtx.createStereoPanner();
+    const lim = metroCtx.createDynamicsCompressor();
+    lim.threshold.value = -3; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = 0.001; lim.release.value = 0.05;
+    metroBus.connect(metroPanner).connect(lim).connect(metroCtx.destination);
+    metroApply();
+  }
+  metroCtx.resume();
+}
+function metroApply() {
+  const v = parseFloat($("#metroVol").value), p = parseFloat($("#metroPan").value);
+  $("#metroVolTxt").textContent = Math.round(v * 100) + "%";
+  if (!metroCtx) return;
+  metroBus.gain.setTargetAtTime(v, metroCtx.currentTime, 0.01);
+  metroPanner.pan.setTargetAtTime(p, metroCtx.currentTime, 0.01);
+}
 function metroClick(at, level) {   // level 0 = tempo 1, 1 = tempo, 2 = subdivisão
   const o = metroCtx.createOscillator(), g = metroCtx.createGain();
+  o.type = "triangle";
   o.frequency.value = [1800, 1200, 800][level];
-  const vol = parseFloat($("#metroVol").value) * [1, 0.7, 0.35][level];
-  g.gain.setValueAtTime(Math.max(vol, 0.0001), at);
-  g.gain.exponentialRampToValueAtTime(0.0001, at + 0.035);
-  o.connect(g).connect(metroCtx.destination);
-  o.start(at); o.stop(at + 0.05);
+  g.gain.setValueAtTime([1, 0.7, 0.4][level], at);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + 0.045);
+  o.connect(g).connect(metroBus);
+  o.start(at); o.stop(at + 0.06);
 }
 function metroTick() {
   const mode = metroMode();
@@ -428,14 +454,17 @@ function setMetro(mode) {
   document.querySelectorAll("#metroSeg button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.m === mode)));
   if (mode !== "off") {
     metroLast = mode;
-    metroCtx = metroCtx || new (window.AudioContext || window.webkitAudioContext)();
-    metroCtx.resume();
+    metroEnsure();
   }
   metroFrom = null; store.set("metro", mode);
 }
 document.querySelectorAll("#metroSeg button").forEach((x) => x.onclick = () => setMetro(x.dataset.m));
-$("#metroVol").value = store.get("metroVol", "0.6");
-$("#metroVol").oninput = () => store.set("metroVol", $("#metroVol").value);
+$("#metroVol").value = store.get("metroVol2", "1");
+$("#metroPan").value = store.get("metroPan", "0");
+$("#metroVol").oninput = () => { store.set("metroVol2", $("#metroVol").value); metroApply(); };
+$("#metroPan").oninput = () => { store.set("metroPan", $("#metroPan").value); metroApply(); };
+$("#metroPan").ondblclick = () => { $("#metroPan").value = 0; $("#metroPan").oninput(); };
+metroApply();
 for (const ev of ["play", "seeked", "ratechange", "pause"]) audio.addEventListener(ev, () => {
   metroFrom = null;
   if (ev === "play" && metroCtx) metroCtx.resume();
@@ -451,7 +480,7 @@ setInterval(metroTick, 25);
   document.querySelectorAll("#metroSeg button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.m === saved)));
   if (saved !== "off") {
     metroLast = saved;
-    audio.addEventListener("play", () => { metroCtx = metroCtx || new (window.AudioContext || window.webkitAudioContext)(); metroCtx.resume(); });
+    audio.addEventListener("play", metroEnsure);
   }
 })();
 
