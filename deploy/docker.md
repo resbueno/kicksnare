@@ -8,8 +8,8 @@ docker build -t kicksnare:latest .
 docker volume create kicksnare-data
 cat > kicksnare.env <<'ENV'
 KICKSNARE_BASE=/kicksnare
-KICKSNARE_USER=kicksnare
-KICKSNARE_PASSWORD=<defina>
+KICKSNARE_ADMIN_USER=<seu usuário>
+KICKSNARE_ADMIN_PASSWORD=<defina>
 ENV
 chmod 600 kicksnare.env
 

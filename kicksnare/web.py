@@ -1,26 +1,27 @@
 """API e páginas do Kicksnare.
 
-Rodar: uvicorn kicksnare.web:app --host 127.0.0.1 --port 8000
-Defina KICKSNARE_PASSWORD (e opcionalmente KICKSNARE_USER) para exigir login.
+Rodar: uvicorn kicksnare.asgi:application --host 127.0.0.1 --port 8000
+
+Contas: cadastro aberto; cada usuário vê apenas as músicas que enviou. Para a conta do
+dono (e para que músicas criadas antes das contas passem a ser dele) defina
+KICKSNARE_ADMIN_USER e KICKSNARE_ADMIN_PASSWORD.
 """
+import contextvars
 import hashlib
 import json
 import os
 import re
-import secrets
-from pathlib import Path
-
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel
-
 import shutil
 import subprocess
+from pathlib import Path
 
 import cv2
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
+from . import auth as authlib
 from . import db, sheet as sheetlib
 from .ingest import DATA_DIR, file_song_id
 from .separate import ensure_no_drums
@@ -32,33 +33,78 @@ from .transcribe import ORDER, PIECES, to_musicxml
 STATIC = Path(__file__).parent / "static"
 # Prefixo de URL quando roda atrás de um proxy em subcaminho (ex.: /kicksnare). Vazio = raiz.
 BASE = os.environ.get("KICKSNARE_BASE", "").rstrip("/")
+UPLOADS = DATA_DIR / "uploads"
+MAX_UPLOAD = 300 * 1024 * 1024
+MAX_SONGS = int(os.environ.get("KICKSNARE_MAX_SONGS", "25"))      # por usuário
+MAX_ACTIVE = int(os.environ.get("KICKSNARE_MAX_ACTIVE", "3"))     # na fila + processando, por usuário
+MAX_QUEUE_TOTAL = int(os.environ.get("KICKSNARE_MAX_QUEUE", "20"))  # fila inteira (todos os usuários)
+MIN_FREE_GB = float(os.environ.get("KICKSNARE_MIN_FREE_GB", "15"))  # recusa novos envios abaixo disso
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+YT_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})")
 
 
 def _page(name: str) -> HTMLResponse:
     return HTMLResponse((STATIC / name).read_text().replace("__BASE__", BASE))
-UPLOADS = DATA_DIR / "uploads"
-MAX_UPLOAD = 300 * 1024 * 1024
-ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-YT_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})")
-
-security = HTTPBasic(auto_error=False)
 
 
-def auth(creds: HTTPBasicCredentials | None = Depends(security)) -> None:
-    password = os.environ.get("KICKSNARE_PASSWORD")
-    if not password:
+# ---------- sessão / usuário ----------
+_user_var: contextvars.ContextVar = contextvars.ContextVar("ks_user", default=None)
+
+
+class LoginRedirect(Exception):
+    """Página protegida sem sessão: manda para /login."""
+
+
+def _rel_path(request: Request) -> str:
+    path = request.url.path
+    if BASE and path.startswith(BASE):
+        path = path[len(BASE):]
+    return path or "/"
+
+
+def _client_ip(request: Request) -> str:
+    return request.headers.get("x-real-ip") or (request.client.host if request.client else "?")
+
+
+def _is_https(request: Request) -> bool:
+    return request.headers.get("x-forwarded-proto") == "https" or request.url.scheme == "https"
+
+
+def _session_user(request: Request) -> dict | None:
+    tok = request.cookies.get(authlib.SESSION_COOKIE)
+    return db.user_for_session(authlib.token_hash(tok)) if tok else None
+
+
+PUBLIC_PATHS = {"/login", "/favicon.ico"}
+
+
+async def auth_dep(request: Request) -> None:
+    """async de propósito: o contextvar precisa ficar visível para os endpoints síncronos."""
+    path = _rel_path(request)
+    user = _session_user(request)
+    _user_var.set(user)
+    if user or path in PUBLIC_PATHS or path.startswith("/api/auth/"):
         return
-    user = os.environ.get("KICKSNARE_USER", "kicksnare")
-    ok = (
-        creds is not None
-        and secrets.compare_digest(creds.username.encode(), user.encode())
-        and secrets.compare_digest(creds.password.encode(), password.encode())
-    )
-    if not ok:
-        raise HTTPException(401, "Não autorizado", headers={"WWW-Authenticate": "Basic"})
+    if path.startswith("/api/"):
+        raise HTTPException(401, "faça login")
+    raise LoginRedirect()
 
 
-app = FastAPI(title="Kicksnare", dependencies=[Depends(auth)])
+def _require_user() -> dict:
+    user = _user_var.get()
+    if not user:
+        raise HTTPException(401, "faça login")
+    return user
+
+
+app = FastAPI(title="Kicksnare", dependencies=[Depends(auth_dep)])
+
+
+@app.exception_handler(LoginRedirect)
+async def _login_redirect(request: Request, exc: LoginRedirect) -> RedirectResponse:
+    return RedirectResponse(f"{BASE}/login", status_code=303)
+
+
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -75,10 +121,12 @@ def _fresh(song: dict) -> dict:
 
 
 def _song(song_id: str) -> dict:
+    """Música do usuário logado (ou qualquer uma, para o admin). De outro dono = 404."""
+    user = _require_user()
     if not ID_RE.match(song_id):
         raise HTTPException(404, "música não encontrada")
     song = db.get(song_id)
-    if not song:
+    if not song or (song.get("owner_id") != user["id"] and not user.get("is_admin")):
         raise HTTPException(404, "música não encontrada")
     return _fresh(song)
 
@@ -101,6 +149,101 @@ def index() -> HTMLResponse:
     return _page("index.html")
 
 
+@app.get("/login", include_in_schema=False)
+def login_page(request: Request):
+    if _session_user(request):
+        return RedirectResponse(f"{BASE}/", status_code=303)
+    return _page("login.html")
+
+
+@app.get("/account", include_in_schema=False)
+def account_page() -> HTMLResponse:
+    return _page("account.html")
+
+
+# ---------- contas ----------
+class Credentials(BaseModel):
+    username: str
+    password: str
+
+
+class PasswordChange(BaseModel):
+    current: str
+    new: str
+
+
+def _start_session(response: Response, request: Request, user_id: int) -> None:
+    tok, th = authlib.new_token()
+    db.create_session(user_id, th, authlib.SESSION_DAYS)
+    response.set_cookie(
+        authlib.SESSION_COOKIE, tok, max_age=authlib.SESSION_DAYS * 86400,
+        httponly=True, samesite="lax", secure=_is_https(request), path=BASE or "/",
+    )
+
+
+@app.post("/api/auth/register")
+def register(body: Credentials, request: Request, response: Response) -> dict:
+    ip = _client_ip(request)
+    if authlib.signups.blocked(ip):
+        raise HTTPException(429, "muitos cadastros deste endereço; tente mais tarde")
+    username = authlib.normalize_username(body.username)
+    err = authlib.validate_username(username) or authlib.validate_password(body.password)
+    if err:
+        raise HTTPException(400, err)
+    uid = db.create_user(username, authlib.hash_password(body.password))
+    if uid is None:
+        raise HTTPException(409, "este usuário já existe")
+    authlib.signups.hit(ip)
+    _start_session(response, request, uid)
+    return {"username": username}
+
+
+@app.post("/api/auth/login")
+def login(body: Credentials, request: Request, response: Response) -> dict:
+    username = authlib.normalize_username(body.username)
+    key = f"{_client_ip(request)}|{username}"
+    if authlib.login_failures.blocked(key):
+        raise HTTPException(429, "muitas tentativas; aguarde alguns minutos")
+    user = db.get_user_by_name(username)
+    if user and authlib.verify_password(body.password, user["pw_hash"]):
+        authlib.login_failures.clear(key)
+        _start_session(response, request, user["id"])
+        return {"username": user["username"]}
+    if not user:
+        authlib.burn_time(body.password)   # mesmo custo: não revela se o usuário existe
+    authlib.login_failures.hit(key)
+    raise HTTPException(401, "usuário ou senha incorretos")
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response) -> dict:
+    tok = request.cookies.get(authlib.SESSION_COOKIE)
+    if tok:
+        db.delete_session(authlib.token_hash(tok))
+    response.delete_cookie(authlib.SESSION_COOKIE, path=BASE or "/")
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def me() -> dict:
+    u = _require_user()
+    return {"username": u["username"], "is_admin": bool(u.get("is_admin"))}
+
+
+@app.post("/api/auth/password")
+def change_password(body: PasswordChange, request: Request, response: Response) -> dict:
+    user = _require_user()
+    row = db.get_user_by_name(user["username"])
+    if not row or not authlib.verify_password(body.current, row["pw_hash"]):
+        raise HTTPException(401, "senha atual incorreta")
+    err = authlib.validate_password(body.new)
+    if err:
+        raise HTTPException(400, err)
+    db.set_password(user["id"], authlib.hash_password(body.new))   # encerra as outras sessões
+    _start_session(response, request, user["id"])
+    return {"ok": True}
+
+
 @app.get("/songs/{song_id}", include_in_schema=False)
 def song_page(song_id: str) -> HTMLResponse:
     _song(song_id)
@@ -112,26 +255,61 @@ class NewSong(BaseModel):
     url: str
 
 
+def _scoped_id(user: dict, raw: str) -> str:
+    """O mesmo vídeo enviado por dois usuários vira duas músicas (dados, correções e PDFs separados)."""
+    return f"u{user['id']}-{raw}"
+
+
+def _check_quota(user: dict) -> None:
+    if user.get("is_admin"):          # o dono não tem cota por usuário (a trava de disco vale para todos)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if shutil.disk_usage(DATA_DIR).free < MIN_FREE_GB * 1024 ** 3:
+            raise HTTPException(507, "servidor sem espaço disponível no momento")
+        return
+    if db.active_total() >= MAX_QUEUE_TOTAL:
+        raise HTTPException(503, "a fila de processamento está cheia; tente novamente em alguns minutos")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(DATA_DIR).free < MIN_FREE_GB * 1024 ** 3:
+        raise HTTPException(507, "servidor sem espaço disponível no momento")
+    total, active = db.song_counts(user["id"])
+    if active >= MAX_ACTIVE:
+        raise HTTPException(429, f"você já tem {active} músicas em processamento; aguarde terminarem")
+    if total >= MAX_SONGS:
+        raise HTTPException(409, f"limite de {MAX_SONGS} músicas; apague alguma para enviar outra")
+
+
 @app.get("/api/songs")
-def list_songs() -> list[dict]:
-    return [_fresh(s) for s in db.list_songs()]
+def list_songs(mine: bool = False) -> list[dict]:
+    """O admin vê as músicas de todos (com `owner`); `?mine=1` restringe às dele."""
+    user = _require_user()
+    owner = user["id"] if (mine or not user.get("is_admin")) else None
+    return [_fresh(s) for s in db.list_songs(owner)]
 
 
 @app.post("/api/songs")
 def add_song(body: NewSong) -> dict:
+    user = _require_user()
     url = body.url.strip()
     if not re.match(r"^https?://", url):
         raise HTTPException(400, "informe uma URL http(s)")
     m = YT_RE.search(url)
-    song_id = m.group(1) if m else "url-" + hashlib.sha1(url.encode()).hexdigest()[:10]
-    return db.enqueue(song_id, url)
+    raw = m.group(1) if m else "url-" + hashlib.sha1(url.encode()).hexdigest()[:10]
+    song_id = _scoped_id(user, raw)
+    existing = db.get(song_id)
+    if not (existing and existing.get("owner_id") == user["id"]
+            and existing["status"] in ("queued", "running", "done")):
+        _check_quota(user)
+    return db.enqueue(song_id, url, owner_id=user["id"])
 
 
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)) -> dict:
+    user = _require_user()
+    _check_quota(user)
     name = re.sub(r"[^A-Za-z0-9._ -]", "_", Path(file.filename or "audio").name)[:120]
-    UPLOADS.mkdir(parents=True, exist_ok=True)
-    dest = UPLOADS / name
+    folder = UPLOADS / str(user["id"])
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / name
     size = 0
     with dest.open("wb") as out:
         while chunk := await file.read(1024 * 1024):
@@ -141,12 +319,28 @@ async def upload(file: UploadFile = File(...)) -> dict:
                 dest.unlink(missing_ok=True)
                 raise HTTPException(413, "arquivo grande demais (máx. 300 MB)")
             out.write(chunk)
-    return db.enqueue(file_song_id(dest), str(dest), title=Path(name).stem)
+    return db.enqueue(_scoped_id(user, file_song_id(dest)), str(dest), title=Path(name).stem, owner_id=user["id"])
 
 
 @app.get("/api/songs/{song_id}")
 def get_song(song_id: str) -> dict:
     return _song(song_id)
+
+
+@app.delete("/api/songs/{song_id}")
+def delete_song(song_id: str) -> dict:
+    song = _song(song_id)
+    if song["status"] == "running":
+        raise HTTPException(409, "está em processamento; aguarde terminar")
+    db.delete_song(song_id)
+    shutil.rmtree(DATA_DIR / song_id, ignore_errors=True)
+    src = Path(song["source"])
+    try:
+        if src.is_file() and UPLOADS in src.resolve().parents:
+            src.unlink()
+    except OSError:
+        pass
+    return {"deleted": song_id}
 
 
 @app.post("/api/songs/{song_id}/retry")
@@ -491,3 +685,19 @@ def reset_edits(song_id: str) -> dict:
     measures, clusters, _, edited = _load(song_dir)
     _rebuild_score(song_dir, edited)
     return {"edits": 0}
+
+
+def _bootstrap_admin() -> None:
+    """Cria a conta do dono (se faltar) e passa para ela as músicas anteriores às contas."""
+    name = authlib.normalize_username(os.environ.get("KICKSNARE_ADMIN_USER", ""))
+    pw = os.environ.get("KICKSNARE_ADMIN_PASSWORD", "")
+    if not name or not pw:
+        return
+    user = db.get_user_by_name(name)
+    uid = user["id"] if user else db.create_user(name, authlib.hash_password(pw), is_admin=True)
+    if uid is not None:
+        db.set_admin(uid, True)
+        db.assign_orphans(uid)
+
+
+_bootstrap_admin()

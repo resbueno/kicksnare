@@ -28,8 +28,10 @@
   </div>
 
   <h2>Músicas</h2>
+  <label id="mineWrap" class="muted small" hidden style="display:none"><input type="checkbox" id="mine"> só as minhas</label>
   <div class="panel" id="list"><span class="muted">Carregando…</span></div>
 </main>
+<script src="__BASE__/static/auth.js" data-base="__BASE__"></script>
 <script>
 const BASE = "__BASE__";
 const $ = (s) => document.querySelector(s);
@@ -49,6 +51,10 @@ function render(songs) {
     left.append(title);
     const meta = document.createElement("div"); meta.className = "muted";
     meta.style.fontSize = ".85rem";
+    if (isAdmin && s.owner) {
+      const o = document.createElement("span"); o.className = "chip"; o.textContent = "de " + s.owner;
+      o.style.marginRight = "8px"; left.append(o);
+    }
     if (s.status === "done" && s.stats) {
       meta.textContent = `${s.stats.bars} compassos · ${Math.round(s.stats.bpm_median)} BPM` +
         (s.stats.bars_reliable ? "" : " · compassos pouco confiáveis");
@@ -65,6 +71,17 @@ function render(songs) {
     chip.className = "chip " + ({ done: "ok", error: "err", running: "warn" }[s.status] || "");
     chip.textContent = { done: "pronto", error: "erro", running: STAGES[s.stage] || "processando", queued: "na fila" }[s.status];
     right.append(chip);
+    if (s.status !== "running") {
+      const d = document.createElement("button"); d.textContent = "Apagar"; d.className = "danger";
+      let armed = false;
+      d.onclick = async () => {
+        if (!armed) { armed = true; d.textContent = "Confirmar?"; setTimeout(() => { armed = false; d.textContent = "Apagar"; }, 4000); return; }
+        const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(s.id)}`, { method: "DELETE" });
+        if (!r.ok) { try { alert((await r.json()).detail); } catch {} }
+        load();
+      };
+      right.append(d);
+    }
     if (s.status === "error") {
       const b = document.createElement("button"); b.textContent = "Tentar de novo";
       b.onclick = async () => { await fetch(`${BASE}/api/songs/${s.id}/retry`, { method: "POST" }); load(); };
@@ -76,7 +93,7 @@ function render(songs) {
 }
 
 async function load() {
-  try { render(await (await fetch(BASE + "/api/songs")).json()); } catch (e) { $("#list").textContent = "Falha ao carregar: " + e; }
+  try { render(await (await fetch(BASE + "/api/songs" + ($("#mine").checked ? "?mine=1" : ""))).json()); } catch (e) { $("#list").textContent = "Falha ao carregar: " + e; }
 }
 
 $("#add").addEventListener("submit", async (ev) => {
@@ -97,6 +114,13 @@ $("#file").addEventListener("change", async (ev) => {
   ev.target.value = ""; load();
 });
 
+let isAdmin = false;
+fetch(BASE + "/api/auth/me").then((r) => r.json()).then((u) => {
+  isAdmin = !!u.is_admin;
+  if (isAdmin) { $("#mineWrap").hidden = false; $("#mineWrap").style.display = ""; }
+  load();
+}).catch(() => {});
+$("#mine").onchange = load;
 load(); setInterval(load, 3000);
 </script>
 </body>

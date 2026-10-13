@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kicksnare · Entrar</title>
+<link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
+<link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
+<meta name="theme-color" content="#16181d">
+<link rel="stylesheet" href="__BASE__/static/base.css">
+</head>
+<body>
+<header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
+<main>
+  <div class="authcard panel">
+    <h1>Kicksnare</h1>
+    <p class="muted">Entre para ver as suas músicas, ou crie uma conta. Cada conta enxerga somente o que ela mesma enviar.</p>
+    <div class="tabs">
+      <button type="button" id="tabLogin" class="on">Entrar</button>
+      <button type="button" id="tabSignup">Criar conta</button>
+    </div>
+    <form id="form" autocomplete="on">
+      <label for="u">Usuário</label>
+      <input type="text" id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      <label for="p">Senha</label>
+      <input type="password" id="p" name="password" autocomplete="current-password" required>
+      <div id="hint" class="muted" style="font-size:.85rem;margin-top:6px" hidden>
+        Usuário: 3 a 32 caracteres (letras minúsculas, números, ponto, hífen ou sublinhado). Senha: mínimo de 8 caracteres.</div>
+      <div class="msg-err" id="err" role="alert"></div>
+      <button class="primary" type="submit" id="go" style="width:100%;margin-top:8px">Entrar</button>
+    </form>
+  </div>
+</main>
+<script>
+const BASE = "__BASE__";
+const $ = (s) => document.querySelector(s);
+let mode = "login";
+function setMode(m) {
+  mode = m;
+  $("#tabLogin").classList.toggle("on", m === "login");
+  $("#tabSignup").classList.toggle("on", m === "signup");
+  $("#go").textContent = m === "login" ? "Entrar" : "Criar conta";
+  $("#p").autocomplete = m === "login" ? "current-password" : "new-password";
+  $("#hint").hidden = m === "login";
+  $("#err").textContent = "";
+}
+$("#tabLogin").onclick = () => setMode("login");
+$("#tabSignup").onclick = () => setMode("signup");
+$("#form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("#err").textContent = ""; $("#go").disabled = true;
+  try {
+    const r = await fetch(`${BASE}/api/auth/${mode === "login" ? "login" : "register"}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("#u").value, password: $("#p").value }) });
+    if (!r.ok) {
+      let d = r.statusText; try { d = (await r.json()).detail || d; } catch {}
+      $("#err").textContent = d; return;
+    }
+    location.href = BASE + "/";
+  } catch (e) { $("#err").textContent = "Falha de conexão: " + e.message; }
+  finally { $("#go").disabled = false; }
+});
+$("#u").focus();
+</script>
+</body>
+</html>

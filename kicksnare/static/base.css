@@ -40,3 +40,21 @@ button:disabled { opacity: .5; cursor: default; }
 .brandbar .in { max-width: 960px; margin: 0 auto; padding: 10px 16px; display: flex; align-items: center; }
 .brandbar img { height: 46px; width: auto; display: block; }
 @media (max-width: 520px) { .brandbar img { height: 36px; } }
+
+/* usuário no cabeçalho */
+.brandbar .in { justify-content: space-between; gap: 12px; }
+.userbox { display: flex; align-items: center; gap: 10px; font-size: .9rem; }
+.userbox a { color: #e6e6e0; text-decoration: none; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.userbox a:hover { text-decoration: underline; }
+.userbox button { background: transparent; color: #e6e6e0; border: 1px solid #3a3d45; padding: 4px 10px; font-size: .85rem; }
+.userbox button:hover { border-color: #fb923c; color: #fb923c; }
+.authcard { max-width: 420px; margin: 40px auto; }
+.authcard h1 { margin-bottom: 4px; }
+.authcard label { display: block; font-size: .9rem; margin: 12px 0 4px; }
+.authcard input[type=text], .authcard input[type=password] { width: 100%; flex: none; }
+.tabs { display: flex; gap: 8px; margin: 16px 0 4px; }
+.tabs button { flex: 1; }
+.tabs button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.msg-err { color: var(--err); font-size: .9rem; min-height: 1.2em; margin-top: 10px; }
+button.danger { color: var(--err); border-color: var(--line); }
+button.danger:hover { border-color: var(--err); }

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kicksnare · Minha conta</title>
+<link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
+<link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
+<meta name="theme-color" content="#16181d">
+<link rel="stylesheet" href="__BASE__/static/base.css">
+</head>
+<body>
+<header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare — início"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
+<main>
+  <p><a href="__BASE__/">← Músicas</a></p>
+  <div class="authcard panel" style="margin-top:12px">
+    <h1>Minha conta</h1>
+    <p class="muted">Usuário: <b id="who">…</b></p>
+    <h2 style="margin-top:20px">Alterar senha</h2>
+    <form id="form">
+      <label for="cur">Senha atual</label>
+      <input type="password" id="cur" autocomplete="current-password" required>
+      <label for="new">Nova senha (mínimo de 8 caracteres)</label>
+      <input type="password" id="new" autocomplete="new-password" minlength="8" required>
+      <div class="msg-err" id="err" role="alert"></div>
+      <div id="ok" class="small" style="color:var(--ok);min-height:1.2em"></div>
+      <button class="primary" type="submit" style="width:100%;margin-top:8px">Alterar senha</button>
+    </form>
+    <p class="muted small" style="margin-top:14px">Ao alterar a senha, os outros dispositivos são desconectados.</p>
+  </div>
+</main>
+<script src="__BASE__/static/auth.js" data-base="__BASE__"></script>
+<script>
+const BASE = "__BASE__";
+const $ = (s) => document.querySelector(s);
+fetch(`${BASE}/api/auth/me`).then((r) => r.json()).then((u) => { $("#who").textContent = u.username; });
+$("#form").addEventListener("submit", async (ev) => {
+  ev.preventDefault(); $("#err").textContent = ""; $("#ok").textContent = "";
+  const r = await fetch(`${BASE}/api/auth/password`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current: $("#cur").value, new: $("#new").value }) });
+  if (!r.ok) { let d = r.statusText; try { d = (await r.json()).detail || d; } catch {} $("#err").textContent = d; return; }
+  $("#cur").value = ""; $("#new").value = ""; $("#ok").textContent = "Senha alterada.";
+});
+</script>
+</body>
+</html>

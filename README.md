@@ -25,7 +25,6 @@ pip install -r requirements.txt            # inclui fastapi, uvicorn, python-mul
 ```
 
 - Interface: `http://localhost:8000` (colar URL do YouTube ou enviar áudio).
-- `KICKSNARE_PASSWORD` (e `KICKSNARE_USER`, padrão `kicksnare`) ativa login HTTP Basic.
 - Dados em `data/<id>/`; banco em `data/kicksnare.db`.
 - Na página da música: partitura (OpenSheetMusicDisplay), player e editor de padrões.
 
@@ -85,3 +84,16 @@ Na página da música: **áudio da faixa escolhida** (original / só bateria / s
 **partitura em PDF** (gerada no navegador a partir do MusicXML, A4 retrato) e **MusicXML**.
 Na página do PDF: **o PDF enviado**, exatamente como foi enviado.
 API: `.../track/{mix,drums,no_drums}.mp3?download=1`, `.../score.musicxml?download=1`, `.../sheet/source.pdf`.
+
+## Contas e acesso
+
+Cadastro aberto: qualquer pessoa cria uma conta e vê **somente** as músicas que ela mesma enviou
+(o mesmo vídeo enviado por duas pessoas vira duas músicas independentes). Senhas com scrypt, sessão em
+cookie HttpOnly/SameSite, limitador de tentativas de login e de cadastros por IP.
+
+- **Admin:** `KICKSNARE_ADMIN_USER` + `KICKSNARE_ADMIN_PASSWORD` criam (se faltar) a conta do dono, marcam-na
+  como admin (vê e gerencia as músicas de todos; lista com o dono de cada uma) e passam para ela as músicas
+  criadas antes das contas. A senha pode ser trocada em `/account`.
+- **Limites** (variáveis de ambiente): `KICKSNARE_MAX_SONGS` (25 por usuário), `KICKSNARE_MAX_ACTIVE` (3
+  na fila/processando por usuário), `KICKSNARE_MAX_QUEUE` (20 na fila inteira), `KICKSNARE_MIN_FREE_GB` (15).
+  O admin não tem cota por usuário.
