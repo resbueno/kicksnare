@@ -66,7 +66,7 @@
           </select>
         </div>
       </div>
-      <div class="field wide">
+      <div class="field" style="grid-column:1/-1">
         <span class="lbl" title="Atalho: tecla M liga/desliga">Metrônomo</span>
         <div class="ctl">
           <span class="seg" id="metroSeg" role="group" aria-label="Metrônomo">
@@ -74,6 +74,16 @@
             <button type="button" data-m="4" title="Em semínimas (só os tempos)" aria-label="Metrônomo em semínimas">♩</button>
             <button type="button" data-m="8" title="Em colcheias" aria-label="Metrônomo em colcheias">♪</button>
             <button type="button" data-m="16" title="Em semicolcheias" aria-label="Metrônomo em semicolcheias">♬</button>
+          </span>
+          <span class="seg" id="metroGrid" role="group" aria-label="Andamento do metrônomo">
+            <button type="button" data-g="song" title="Segue os tempos detectados na gravação" style="font-size:.8rem">música</button>
+            <button type="button" data-g="fixed" title="Andamento constante no BPM escolhido" style="font-size:.8rem">fixo</button>
+          </span>
+          <span id="bpmBox" class="ctl" style="gap:4px" hidden>
+            <button type="button" id="bpmDown" class="sm ghost" aria-label="Diminuir BPM">−</button>
+            <input type="number" id="metroBpm" min="30" max="300" step="1" style="width:4.5em" aria-label="BPM do metrônomo">
+            <button type="button" id="bpmUp" class="sm ghost" aria-label="Aumentar BPM">+</button>
+            <span class="muted small">BPM</span>
           </span>
           <label class="muted small" title="Volume do metrônomo (acima de 100% passa por um limitador)">vol
             <input type="range" id="metroVol" min="0" max="4" step="0.1" value="1" style="width:84px;accent-color:var(--accent);vertical-align:middle"
@@ -183,6 +193,7 @@ async function boot() {
   chip(st.bars_reliable ? "compassos confiáveis" : "compassos pouco confiáveis", st.bars_reliable ? "ok" : "warn");
   link.style.marginLeft = "auto"; $("#chips").append(link);
   totalBars = st.bars;
+  $("#metroBpm").value = store.get("metroBpm:" + id, String(Math.round(st.bpm_median) || 120));
   $("#player").src = `${BASE}/api/songs/${encodeURIComponent(id)}/track/${($("#track") || {}).value || "mix"}.mp3`;
   $("#ready").hidden = false;
   await drawScore(true);
@@ -439,13 +450,22 @@ function metroTick() {
   const sub = { 4: 1, 8: 2, 16: 4 }[mode] || 1, rate = audio.playbackRate || 1;
   const ctxNow = metroCtx.currentTime, mediaNow = audio.currentTime, horizon = mediaNow + 0.15 * rate;
   if (metroFrom === null || metroFrom < mediaNow - 0.3) metroFrom = mediaNow;
-  const b = timing.beats, off = offsetSec(), down = metroDownbeats();
-  for (let i = Math.max(0, Math.floor(timeToQ(metroFrom - off)) - 1); i < b.length - 1; i++) {
-    const t0 = b[i] + off, step = (b[i + 1] - b[i]) / sub;
-    if (t0 >= horizon) break;
-    for (let k = 0; k < sub; k++) {
-      const t = t0 + k * step;
-      if (t >= metroFrom && t < horizon && t > mediaNow - 0.02) metroClick(ctxNow + (t - mediaNow) / rate, k ? 2 : (down.has(i) ? 0 : 1));
+  const b = timing.beats, off = offsetSec();
+  const play = (t, level) => { if (t >= metroFrom && t < horizon && t > mediaNow - 0.02) metroClick(ctxNow + (t - mediaNow) / rate, level); };
+  const bpm = parseFloat($("#metroBpm").value);
+  if (metroGrid() === "fixed" && bpm >= 30 && bpm <= 300) {
+    // grade constante ancorada no 1º tempo detectado; BPM em tempo da música (a velocidade escala junto)
+    const a = b[0] + off, step = 60 / bpm / sub, bpb = (timing.bars[0] && timing.bars[0].beats) || 4;
+    for (let n = Math.max(0, Math.ceil((metroFrom - a) / step)); a + n * step < horizon; n++) {
+      const beat = Math.floor(n / sub);
+      play(a + n * step, n % sub ? 2 : (beat % bpb === 0 ? 0 : 1));
+    }
+  } else {
+    const down = metroDownbeats();
+    for (let i = Math.max(0, Math.floor(timeToQ(metroFrom - off)) - 1); i < b.length - 1; i++) {
+      const t0 = b[i] + off, step = (b[i + 1] - b[i]) / sub;
+      if (t0 >= horizon) break;
+      for (let k = 0; k < sub; k++) play(t0 + k * step, k ? 2 : (down.has(i) ? 0 : 1));
     }
   }
   metroFrom = horizon;
@@ -465,6 +485,21 @@ $("#metroVol").oninput = () => { store.set("metroVol2", $("#metroVol").value); m
 $("#metroPan").oninput = () => { store.set("metroPan", $("#metroPan").value); metroApply(); };
 $("#metroPan").ondblclick = () => { $("#metroPan").value = 0; $("#metroPan").oninput(); };
 metroApply();
+const metroGrid = () => (document.querySelector('#metroGrid button[aria-pressed="true"]') || {}).dataset?.g || "song";
+function setGrid(g) {
+  document.querySelectorAll("#metroGrid button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.g === g)));
+  $("#bpmBox").hidden = g !== "fixed";
+  store.set("metroGrid", g); metroFrom = null;
+}
+document.querySelectorAll("#metroGrid button").forEach((x) => x.onclick = () => setGrid(x.dataset.g));
+setGrid(store.get("metroGrid", "song"));
+function setBpm(v) {
+  v = Math.min(300, Math.max(30, Math.round(v) || 120));
+  $("#metroBpm").value = v; store.set("metroBpm:" + id, v); metroFrom = null;
+}
+$("#metroBpm").onchange = () => setBpm(parseFloat($("#metroBpm").value));
+$("#bpmDown").onclick = () => setBpm(parseFloat($("#metroBpm").value) - 1);
+$("#bpmUp").onclick = () => setBpm(parseFloat($("#metroBpm").value) + 1);
 for (const ev of ["play", "seeked", "ratechange", "pause"]) audio.addEventListener(ev, () => {
   metroFrom = null;
   if (ev === "play" && metroCtx) metroCtx.resume();
