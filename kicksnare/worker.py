@@ -62,7 +62,7 @@ def process(song: dict) -> None:
 
     _set(sid, "finalize", "Gerando áudio para o player")
     ensure_no_drums(audio.parent)
-    for wav_name, mp3_name in (("audio.wav", "audio.mp3"), ("drums.wav", "drums-play.mp3"), ("no_drums.wav", "no_drums.mp3")):
+    for wav_name, mp3_name in (("audio.wav", "audio.mp3"), ("drums.wav", "drums-gate.mp3"), ("no_drums.wav", "no_drums.mp3")):
         mp3 = audio.parent / mp3_name
         if not mp3.exists():
             encode_mp3(audio.parent / wav_name, mp3, drums=wav_name == "drums.wav")

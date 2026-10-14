@@ -463,7 +463,7 @@ def reprocess(song_id: str) -> dict:
     edits = song_dir / "edits.json"
     if edits.exists():
         edits.replace(song_dir / "edits.bak.json")
-    (song_dir / "drums-play.mp3").unlink(missing_ok=True)
+    (song_dir / "drums-gate.mp3").unlink(missing_ok=True)
     db.update(song_id, status="queued", message="Na fila para reprocessar", error=None, stage=None, progress=0.0)
     return db.get(song_id)
 
@@ -485,8 +485,9 @@ def score(song_id: str, download: bool = False) -> FileResponse:
     return FileResponse(f, media_type="application/xml")
 
 
-# drums-play.mp3: bateria solo tratada (separate.encode_mp3); o nome novo regenera os drums.mp3 antigos
-TRACKS = {"mix": ("audio.wav", "audio.mp3"), "drums": ("drums.wav", "drums-play.mp3"), "no_drums": ("no_drums.wav", "no_drums.mp3")}
+# drums-gate.mp3: bateria solo tratada (separate.encode_mp3); o nome muda quando o tratamento
+# muda, para os mp3 antigos (drums.mp3, drums-play.mp3 com compressor) serem refeitos
+TRACKS = {"mix": ("audio.wav", "audio.mp3"), "drums": ("drums.wav", "drums-gate.mp3"), "no_drums": ("no_drums.wav", "no_drums.mp3")}
 
 
 def _ensure_track(song_dir: Path, track: str) -> Path:

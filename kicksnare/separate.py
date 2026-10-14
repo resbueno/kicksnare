@@ -82,14 +82,14 @@ def ensure_no_drums(song_dir: Path) -> Path:
 # guitarra, não cauda de prato). Um gate por volume não separa 7 dB; então o "gate" usa os golpes
 # já transcritos (events.json): aberto em volta de cada golpe, pelo tempo que a peça soa, e o resto
 # é atenuado PLAY_FLOOR_DB (leve: ghost notes que a transcrição perdeu continuam audíveis). Depois,
-# compressão leve e ganho de compensação. Só o mp3 é tratado: drums.wav fica exato (a transcrição
-# e o "sem bateria" = mix - bateria dependem dele).
+# o volume sobe até o pico ficar em PLAY_PEAK_DB, sem compressor nem limitador (a compressão deixava
+# o som ruim). Só o mp3 é tratado: drums.wav fica exato (a transcrição e o "sem bateria" = mix -
+# bateria dependem dele).
 PLAY_FLOOR_DB = -12.0
 PLAY_PRE = 0.03        # s antes do golpe (o ADTOF marca ~20 ms cedo)
 PLAY_HOLD = {"kick": 0.25, "snare": 0.30, "hihat": 0.20, "cymbal": 1.5}  # tons: 0,5 s (padrão)
 PLAY_RELEASE = 0.15    # s, volta suave ao nível do fundo
-PLAY_REF_DB = -14.0    # nível (p95 do RMS em 50 ms) depois da normalização
-PLAY_COMP = "acompressor=threshold=0.17783:ratio=2:attack=15:release=150:knee=4:makeup=1.41254"  # -15 dB, 2:1, +3 dB
+PLAY_PEAK_DB = -1.0    # pico depois da normalização (folga para o mp3 não clipar)
 
 
 def _gate_intervals(song_dir: Path, sr: int) -> list[tuple[int, int]]:
@@ -112,10 +112,10 @@ def _gate_intervals(song_dir: Path, sr: int) -> list[tuple[int, int]]:
     return [(a, b) for a, b in merged]
 
 
-def drums_playback_wav(song_dir: Path, out: Path, block_windows: int = 400) -> Path:
-    """drums.wav com o fundo entre golpes atenuado e o nível normalizado (para o mp3 do player).
+def drums_playback_wav(song_dir: Path, out: Path, block: int = 1 << 20) -> Path:
+    """drums.wav com o fundo entre golpes atenuado e o pico normalizado (para o mp3 do player).
 
-    Processa em blocos, em duas passadas (medir o nível, depois aplicar), para caber no container
+    Processa em blocos, em duas passadas (medir o pico, depois aplicar), para caber no container
     web (512 MB): carregar a faixa inteira e fazer cópias passava de 400 MB numa música de 4 min.
     """
     import numpy as np
@@ -144,22 +144,15 @@ def drums_playback_wav(song_dir: Path, out: Path, block_windows: int = 400) -> P
                 np.maximum(g[r0 - a:r1 - a], ramp[r0 - e0:r1 - e0], out=g[r0 - a:r1 - a])
         return g
 
-    w = int(0.05 * sr)
-    block = w * block_windows
-    db = []
+    peak = 0.0
     pos = 0
     for x in sf.blocks(str(src), blocksize=block, dtype="float32", always_2d=True):
-        m = x.mean(axis=1) * gain(pos, pos + len(x))
-        n = len(m) // w
-        if n:
-            db.append(20 * np.log10(np.sqrt((m[:n * w].reshape(n, w) ** 2).mean(axis=1)) + 1e-9))
+        peak = max(peak, float(np.abs(x * gain(pos, pos + len(x))[:, None]).max(initial=0.0)))
         pos += len(x)
-    levels = np.concatenate(db) if db else np.array([])
-    levels = levels[levels > -90]
-    norm = 10 ** ((PLAY_REF_DB - float(np.percentile(levels, 95))) / 20) if len(levels) else 1.0
+    norm = 10 ** (PLAY_PEAK_DB / 20) / peak if peak > 0 else 1.0
 
     pos = 0
-    with sf.SoundFile(str(src)) as f,             sf.SoundFile(str(out), "w", sr, f.channels, subtype="FLOAT") as o:  # float: passa de 0 dBFS antes do limitador
+    with sf.SoundFile(str(src)) as f, sf.SoundFile(str(out), "w", sr, f.channels, subtype="FLOAT") as o:
         for x in f.blocks(blocksize=block, dtype="float32", always_2d=True):
             o.write(x * (gain(pos, pos + len(x)) * norm)[:, None])
             pos += len(x)
@@ -169,12 +162,9 @@ def drums_playback_wav(song_dir: Path, out: Path, block_windows: int = 400) -> P
 def encode_mp3(wav: Path, mp3: Path, drums: bool = False) -> Path:
     """wav -> mp3 128k (via arquivo temporário). `drums=True` aplica o tratamento da bateria solo."""
     tmp = mp3.with_suffix(".tmp.mp3")
-    src, af = wav, []
-    if drums:
-        src = drums_playback_wav(wav.parent, mp3.with_suffix(".tmp.wav"))
-        af = ["-af", PLAY_COMP + ",alimiter=limit=0.95:level=false"]
+    src = drums_playback_wav(wav.parent, mp3.with_suffix(".tmp.wav")) if drums else wav
     try:
-        subprocess.run(["ffmpeg", "-y", "-i", str(src), "-vn", *af, "-b:a", "128k", str(tmp)],
+        subprocess.run(["ffmpeg", "-y", "-i", str(src), "-vn", "-b:a", "128k", str(tmp)],
                        check=True, capture_output=True)
     finally:
         if src != wav:
