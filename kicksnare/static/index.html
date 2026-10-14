@@ -41,6 +41,8 @@
       <label id="mineWrap" class="muted small" hidden style="display:none"><input type="checkbox" id="mine">só as minhas</label>
     </span>
   </div>
+  <input type="search" id="q" placeholder="Pesquisar por música, banda ou termo…" aria-label="Pesquisar músicas"
+    autocomplete="off" style="width:100%;margin:0 0 12px">
   <div class="panel" id="list"><span class="muted">Carregando…</span></div>
 </main>
 <script src="__BASE__/static/auth.js" data-base="__BASE__"></script>
@@ -66,9 +68,18 @@ const letterOf = (t) => {
 };
 const heading = (text, tag) => { const h = document.createElement(tag); h.textContent = text; h.style.margin = tag === "h3" ? "14px 0 4px" : "6px 0 2px"; return h; };
 
-function render(songs) {
+const norm = (t) => (t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+let allSongs = [];
+
+function render(all) {
+  allSongs = all;
   const list = $("#list");
-  if (!songs.length) { list.innerHTML = '<span class="muted">Nenhuma música ainda.</span>'; return; }
+  if (!all.length) { list.innerHTML = '<span class="muted">Nenhuma música ainda.</span>'; return; }
+  const terms = norm($("#q").value).split(/\s+/).filter(Boolean);   // todos os termos precisam aparecer
+  const songs = terms.length
+    ? all.filter((s) => { const hay = norm([s.title, s.artist, s.owner].join(" ")); return terms.every((t) => hay.includes(t)); })
+    : all;
+  if (!songs.length) { list.innerHTML = '<span class="muted">Nenhuma música encontrada para essa pesquisa.</span>'; return; }
   const mode = $("#group").value;
   const name = (s) => s.title || s.source || "";
   if (mode === "flat") { list.replaceChildren(...songs.map(songRow)); return; }
@@ -207,6 +218,7 @@ fetch(BASE + "/api/auth/me").then((r) => r.json()).then((u) => {
   load();
 }).catch(() => {});
 $("#mine").onchange = load;
+$("#q").addEventListener("input", () => render(allSongs));
 try { $("#group").value = localStorage.getItem("ks-group") || "artist"; } catch {}
 $("#group").onchange = () => { try { localStorage.setItem("ks-group", $("#group").value); } catch {} load(); };
 load(); setInterval(() => { if (!renaming) load(); }, 3000);
