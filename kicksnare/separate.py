@@ -92,38 +92,77 @@ PLAY_REF_DB = -14.0    # nível (p95 do RMS em 50 ms) depois da normalização
 PLAY_COMP = "acompressor=threshold=0.17783:ratio=2:attack=15:release=150:knee=4:makeup=1.41254"  # -15 dB, 2:1, +3 dB
 
 
-def drums_playback_wav(song_dir: Path, out: Path) -> Path:
-    """drums.wav com o fundo entre golpes atenuado e o nível normalizado (para o mp3 do player)."""
+def _gate_intervals(song_dir: Path, sr: int) -> list[tuple[int, int]]:
+    """Trechos (em amostras) em que o gate fica aberto, já fundidos e em ordem."""
     import json
 
+    events = song_dir / "events.json"
+    if not events.exists():
+        return []
+    spans = sorted(
+        (max(0, int((e["t"] - PLAY_PRE) * sr)), int((e["t"] + PLAY_HOLD.get(e["piece"], 0.5)) * sr))
+        for e in json.loads(events.read_text())
+    )
+    merged: list[list[int]] = []
+    for a, b in spans:
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return [(a, b) for a, b in merged]
+
+
+def drums_playback_wav(song_dir: Path, out: Path, block_windows: int = 400) -> Path:
+    """drums.wav com o fundo entre golpes atenuado e o nível normalizado (para o mp3 do player).
+
+    Processa em blocos, em duas passadas (medir o nível, depois aplicar), para caber no container
+    web (512 MB): carregar a faixa inteira e fazer cópias passava de 400 MB numa música de 4 min.
+    """
     import numpy as np
     import soundfile as sf
 
-    x, sr = sf.read(str(song_dir / "drums.wav"), dtype="float32", always_2d=True)
-    events = song_dir / "events.json"
-    if events.exists():
-        floor = 10 ** (PLAY_FLOOR_DB / 20)
-        open_ = np.zeros(len(x), dtype=bool)
-        for e in json.loads(events.read_text()):
-            a = max(0, int((e["t"] - PLAY_PRE) * sr))
-            open_[a:int((e["t"] + PLAY_HOLD.get(e["piece"], 0.5)) * sr)] = True
-        gain = np.where(open_, 1.0, floor).astype(np.float32)
-        # suaviza só as descidas (release); as subidas ficam instantâneas para não amaciar o ataque
-        k = int(PLAY_RELEASE * sr)
-        if k > 1:
-            ramp = np.linspace(1.0, floor, k, dtype=np.float32)
-            for c in np.flatnonzero(open_[:-1] & ~open_[1:]) + 1:
-                seg = gain[c:c + k]
-                np.maximum(seg, ramp[:len(seg)], out=seg)
-        x = x * gain[:, None]
-    mono = x.mean(axis=1)
+    src = song_dir / "drums.wav"
+    sr = sf.info(str(src)).samplerate
+    spans = _gate_intervals(song_dir, sr)
+    floor = 10 ** (PLAY_FLOOR_DB / 20)
+    k = max(1, int(PLAY_RELEASE * sr))
+    ramp = np.linspace(1.0, floor, k, dtype=np.float32)
+    starts = np.array([a for a, _ in spans], dtype=np.int64)
+
+    def gain(a: int, b: int) -> np.ndarray:
+        if not spans:
+            return np.ones(b - a, dtype=np.float32)
+        g = np.full(b - a, floor, dtype=np.float32)
+        # trechos que tocam [a - k, b): o próprio trecho aberto e a descida suave depois dele
+        lo = max(0, int(np.searchsorted(starts, a - k, side="right")) - 1)
+        for s0, e0 in spans[lo:]:
+            if s0 >= b:
+                break
+            g[max(s0, a) - a:max(min(e0, b), a) - a] = 1.0
+            r0, r1 = max(e0, a), min(e0 + k, b)   # release: as subidas ficam instantâneas
+            if r1 > r0:
+                np.maximum(g[r0 - a:r1 - a], ramp[r0 - e0:r1 - e0], out=g[r0 - a:r1 - a])
+        return g
+
     w = int(0.05 * sr)
-    n = len(mono) // w
-    db = 20 * np.log10(np.sqrt((mono[:n * w].reshape(n, w) ** 2).mean(axis=1)) + 1e-9)
-    db = db[db > -90]
-    if len(db):
-        x = x * 10 ** ((PLAY_REF_DB - float(np.percentile(db, 95))) / 20)
-    sf.write(str(out), x, sr, subtype="FLOAT")  # float: o ganho pode passar de 0 dBFS antes do limitador
+    block = w * block_windows
+    db = []
+    pos = 0
+    for x in sf.blocks(str(src), blocksize=block, dtype="float32", always_2d=True):
+        m = x.mean(axis=1) * gain(pos, pos + len(x))
+        n = len(m) // w
+        if n:
+            db.append(20 * np.log10(np.sqrt((m[:n * w].reshape(n, w) ** 2).mean(axis=1)) + 1e-9))
+        pos += len(x)
+    levels = np.concatenate(db) if db else np.array([])
+    levels = levels[levels > -90]
+    norm = 10 ** ((PLAY_REF_DB - float(np.percentile(levels, 95))) / 20) if len(levels) else 1.0
+
+    pos = 0
+    with sf.SoundFile(str(src)) as f,             sf.SoundFile(str(out), "w", sr, f.channels, subtype="FLOAT") as o:  # float: passa de 0 dBFS antes do limitador
+        for x in f.blocks(blocksize=block, dtype="float32", always_2d=True):
+            o.write(x * (gain(pos, pos + len(x)) * norm)[:, None])
+            pos += len(x)
     return out
 
 
