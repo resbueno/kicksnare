@@ -12,7 +12,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 import cv2
@@ -24,7 +23,7 @@ from pydantic import BaseModel
 from . import auth as authlib
 from . import db, eta as etalib, sheet as sheetlib
 from .ingest import DATA_DIR, file_song_id
-from .separate import ensure_no_drums
+from .separate import encode_mp3, ensure_no_drums
 from .patterns import (
     Edit, apply_edits, cluster_bars, edits_from_json, load_measures, with_state, _ranges,
 )
@@ -450,6 +449,25 @@ def retry(song_id: str) -> dict:
     return db.get(song_id)
 
 
+@app.post("/api/songs/{song_id}/reprocess")
+def reprocess(song_id: str) -> dict:
+    """Refaz a transcrição com o algoritmo atual, reaproveitando o áudio e a bateria já separada.
+
+    As edições de padrão apontam para grupos de compassos que mudam com a nova transcrição: ficam
+    guardadas em edits.bak.json. O mp3 da bateria solo depende dos golpes (events.json) e é refeito.
+    """
+    song = _song(song_id)
+    if song["status"] in ("queued", "running"):
+        raise HTTPException(409, "já está na fila ou em processamento")
+    song_dir = DATA_DIR / song_id
+    edits = song_dir / "edits.json"
+    if edits.exists():
+        edits.replace(song_dir / "edits.bak.json")
+    (song_dir / "drums-play.mp3").unlink(missing_ok=True)
+    db.update(song_id, status="queued", message="Na fila para reprocessar", error=None, stage=None, progress=0.0)
+    return db.get(song_id)
+
+
 # ---------- arquivos ----------
 def _download_name(song_id: str, suffix: str, ext: str) -> str:
     """Nome de arquivo amigável: '<título> - <sufixo>.<ext>' (sem caracteres que quebram sistemas de arquivos)."""
@@ -467,7 +485,8 @@ def score(song_id: str, download: bool = False) -> FileResponse:
     return FileResponse(f, media_type="application/xml")
 
 
-TRACKS = {"mix": ("audio.wav", "audio.mp3"), "drums": ("drums.wav", "drums.mp3"), "no_drums": ("no_drums.wav", "no_drums.mp3")}
+# drums-play.mp3: bateria solo tratada (separate.encode_mp3); o nome novo regenera os drums.mp3 antigos
+TRACKS = {"mix": ("audio.wav", "audio.mp3"), "drums": ("drums.wav", "drums-play.mp3"), "no_drums": ("no_drums.wav", "no_drums.mp3")}
 
 
 def _ensure_track(song_dir: Path, track: str) -> Path:
@@ -483,10 +502,7 @@ def _ensure_track(song_dir: Path, track: str) -> Path:
     wav = song_dir / wav_name
     if not wav.exists():
         raise HTTPException(404, "faixa indisponível")
-    tmp = mp3.with_suffix(".tmp.mp3")
-    subprocess.run(["ffmpeg", "-y", "-i", str(wav), "-vn", "-b:a", "128k", str(tmp)], check=True, capture_output=True)
-    tmp.replace(mp3)
-    return mp3
+    return encode_mp3(wav, mp3, drums=track == "drums")
 
 
 @app.get("/api/songs/{song_id}/track/{track}.mp3")

@@ -10,7 +10,7 @@ import traceback
 
 from . import db
 from .ingest import DATA_DIR, ingest
-from .separate import ensure_no_drums, separate_drums
+from .separate import encode_mp3, ensure_no_drums, separate_drums
 
 
 def _set(song_id: str, stage: str, message: str) -> None:
@@ -62,13 +62,10 @@ def process(song: dict) -> None:
 
     _set(sid, "finalize", "Gerando áudio para o player")
     ensure_no_drums(audio.parent)
-    for wav_name, mp3_name in (("audio.wav", "audio.mp3"), ("drums.wav", "drums.mp3"), ("no_drums.wav", "no_drums.mp3")):
+    for wav_name, mp3_name in (("audio.wav", "audio.mp3"), ("drums.wav", "drums-play.mp3"), ("no_drums.wav", "no_drums.mp3")):
         mp3 = audio.parent / mp3_name
         if not mp3.exists():
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", str(audio.parent / wav_name), "-vn", "-b:a", "128k", str(mp3)],
-                check=True, capture_output=True,
-            )
+            encode_mp3(audio.parent / wav_name, mp3, drums=wav_name == "drums.wav")
     row = db.get(sid) or {}
     timings = dict(row.get("timings") or {})
     if row.get("stage_started"):

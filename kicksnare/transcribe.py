@@ -1,6 +1,7 @@
 """Etapa 2: drums.wav (+ audio.wav) -> eventos -> grade de compassos -> MusicXML.
 
-- Onsets por peça: ADTOF (5 classes: bumbo, caixa, tom, hi-hat, pratos).
+- Onsets por peça: ADTOF (5 classes: bumbo, caixa, tom, hi-hat, pratos). A classe tom é
+  dividida em agudo/médio/surdo pela altura de cada golpe (split_toms).
 - Beats: beat_this, rodado no mix completo (mais confiável que no stem).
 - Compassos: a fase de cada compasso vem do backbeat (caixa nos tempos 2 e 4,
   bumbo no 1), via Viterbi sobre os beats. Os downbeats do beat_this entram só
@@ -20,16 +21,21 @@ import pretty_midi
 
 SUBDIV = 4  # subdivisões por beat na grade reta (semicolcheias); tercinas usam 3
 
-# pitch GM do ADTOF -> (nome, nota exibida na pauta, cabeça "x")
+# pitch GM -> (nome, nota exibida na pauta, cabeça "x"). O ADTOF só dá 47 (tom); 50 e 43 saem de
+# split_toms. Com um tom só na música, tudo fica em 47.
 PIECES = {
     35: ("kick", ("F", 4), False),
     38: ("snare", ("C", 5), False),
-    47: ("tom", ("A", 4), False),
+    50: ("tom_hi", ("E", 5), False),
+    47: ("tom", ("D", 5), False),
+    43: ("floor", ("A", 4), False),
     42: ("hihat", ("G", 5), True),
     49: ("cymbal", ("A", 5), True),
 }
-ORDER = [49, 42, 38, 47, 35]  # de cima para baixo na pauta
-KICK, SNARE = 35, 38
+ORDER = [49, 42, 50, 47, 38, 43, 35]  # de cima para baixo na pauta
+CHARS = {49: "CY", 42: "HH", 50: "T1", 47: "T2", 38: "SD", 43: "FT", 35: "BD"}  # grades em texto
+KICK, SNARE, TOM = 35, 38, 47
+TOMS_BY_HEIGHT = {1: [47], 2: [50, 43], 3: [50, 47, 43]}  # nº de tons -> pitches, do agudo ao grave
 
 SWITCH_PENALTY = 6.0   # custo de trocar a fase (~2 compassos de evidência)
 DOWNBEAT_BONUS = 0.25  # desempate fraco a favor dos downbeats do beat_this
@@ -55,11 +61,28 @@ class Measure:
 # 0,10 e abaixo de 0,06 aparece 1-3% de ruído fora do tempo. 0,08 é o compromisso.
 KICK_THRESHOLD = 0.08
 
-# Toms: o limiar padrão do ADTOF (0,32) perde viradas. Medido em 4 músicas: 0,32 -> 0,18 triplica
-# ou quadruplica a contagem (11->42, 28->49, 139->240). Escolhe-se o limiar mais sensível cuja
-# contagem de toms não passa de TOM_MAX_RATIO x a de caixas (acima disso é ruído/vazamento da caixa).
-TOM_CANDIDATES = (0.14, 0.18, 0.25)
-TOM_MAX_RATIO = 1.0
+# Toms: o PeakPicker do ADTOF aplica o limiar sobre "ativação - média dos 100 ms anteriores".
+# Numa virada rápida (semicolcheias a 170 bpm = 88 ms) a ativação do golpe anterior ainda não
+# caiu, a média sobe e os golpes seguintes somem: numa virada de 11 golpes medida, mesmo o
+# limiar 0,14 pegava 4. Para os toms usa-se pico por proeminência na ativação bruta, com
+# histerese: golpes com ativação >= TOM_SEED valem sozinhos; golpes fracos (>= TOM_LOW) só entram
+# encadeados a um tom forte com intervalos <= TOM_CHAIN_GAP (ou seja, dentro de uma virada).
+TOM_SEED = 0.30
+TOM_LOW = 0.10
+TOM_PROMINENCE = 0.08
+TOM_CHAIN_GAP = 0.35  # s
+TOM_MIN_DIST = 0.04   # s; fusas a 180 bpm ainda passam
+# Vazamento: a ativação de tom costuma acompanhar a da caixa e a do bumbo (medido: 63 de 72 toms
+# isolados coincidiam com caixa/bumbo). Tom coincidente com bumbo mais forte é descartado; tom e
+# caixa coincidentes ficam só com a peça mais forte, salvo se as duas tiverem força parecida.
+COINCIDE = 0.02       # s
+BOTH_RATIO = 0.85
+# Caixa: o mesmo efeito da média dos 100 ms apaga repiques rápidos (medido: 162 picos acima do
+# próprio limiar do ADTOF perdidos num rock com viradas, quase todos a 70-120 ms de outra caixa;
+# 3 e 5 nas músicas sem viradas). Somam-se os picos por proeminência no mesmo limiar. Proeminência
+# calibrada pelo encaixe na grade (real ~85% na grade, acaso ~43%): 0,12 -> +162 golpes, ~66% reais;
+# 0,24 -> +117, ~78% reais. Subir a altura em vez da proeminência piora a proporção.
+SNARE_PROMINENCE = 0.24
 
 HAT_CANDIDATES = (0.03, 0.06, 0.10, 0.15, 0.22)  # do mais sensível ao padrão do ADTOF
 HAT_MAX_RATIO = 1.1  # hats detectados não podem passar 110% dos ataques agudos brutos
@@ -99,11 +122,10 @@ def detect_hits(drums_wav: Path, device: str = "cpu") -> tuple[list[Hit], dict]:
     kick_idx = LABELS_5.index(35)
     tom_idx = LABELS_5.index(47)
 
-    def pick(hat_threshold: float, tom_threshold: float = FRAME_RNN_THRESHOLDS[tom_idx]) -> dict:
+    def pick(hat_threshold: float) -> dict:
         thr = list(FRAME_RNN_THRESHOLDS)
         thr[hat_idx] = hat_threshold
         thr[kick_idx] = KICK_THRESHOLD
-        thr[tom_idx] = tom_threshold
         return PeakPicker(thresholds=thr, fps=100).pick(pred, labels=LABELS_5, label_offset=0)[0]
 
     chosen, peaks = FRAME_RNN_THRESHOLDS[hat_idx], None
@@ -116,18 +138,155 @@ def detect_hits(drums_wav: Path, device: str = "cpu") -> tuple[list[Hit], dict]:
     if peaks is None:
         peaks = pick(chosen)
 
-    tom_chosen = FRAME_RNN_THRESHOLDS[tom_idx]
-    n_snare = len(peaks.get(38, []))
-    for th in TOM_CANDIDATES:
-        cand = pick(chosen, th)
-        if len(cand.get(47, [])) <= TOM_MAX_RATIO * max(n_snare, 1):
-            tom_chosen, peaks = th, cand
-            break
+    act = np.asarray(pred)[0]
+    snare_idx = LABELS_5.index(38)
+    n_before = len(peaks[38])
+    peaks[38] = _add_fast_repeats(act[:, snare_idx], peaks[38], FRAME_RNN_THRESHOLDS[snare_idx], SNARE_PROMINENCE)
+    snare_added = len(peaks[38]) - n_before
+    toms, tom_info = _pick_toms(act, [tom_idx, LABELS_5.index(38), kick_idx], peaks[38])
+    split, split_info = split_toms(drums_wav, toms)
+    peaks.pop(TOM)
+    peaks.update(split)
+    tom_info.update(split_info)
+    tom_info["snare_fast_added"] = snare_added
 
     hits = [Hit(float(t), int(pitch)) for pitch, times in peaks.items() for t in times]
-    info = {"tom_threshold": tom_chosen, "tom_hits": len(peaks.get(47, [])), "hihat_threshold": chosen, "kick_threshold": KICK_THRESHOLD, "hf_onsets": ref_count,
+    info = {**tom_info, "tom_hits": len(toms), "hihat_threshold": chosen, "kick_threshold": KICK_THRESHOLD, "hf_onsets": ref_count,
             "hihat_hits": len(peaks.get(42, [])), "kick_hits": len(peaks.get(35, []))}
     return sorted(hits, key=lambda h: (h.time, h.pitch)), info
+
+
+def _add_fast_repeats(act: np.ndarray, times: list[float], height: float, prominence: float,
+                      fps: int = 100) -> list[float]:
+    """`times` + picos da ativação bruta (>= height, por proeminência) que o PeakPicker perdeu."""
+    from scipy.signal import find_peaks
+
+    pk, _ = find_peaks(act, height=height, prominence=prominence, distance=max(1, round(TOM_MIN_DIST * fps)))
+    have = np.asarray(sorted(times))
+    extra = [p / fps for p in pk if not len(have) or np.min(np.abs(have - p / fps)) > COINCIDE]
+    return sorted(list(times) + extra)
+
+
+def _pick_toms(act: np.ndarray, idx: list[int], snares: list[float], fps: int = 100) -> tuple[list[float], dict]:
+    """Toms por proeminência + histerese (ver TOM_SEED). Remove da lista `snares`, no lugar,
+    as caixas que são vazamento de um tom bem mais forte. `idx` = colunas [tom, caixa, bumbo]."""
+    from scipy.signal import find_peaks
+
+    tom, snare, kick = (act[:, i] for i in idx)
+    w = max(1, round(COINCIDE * fps))
+
+    def around(x, p):
+        return float(x[max(0, p - w):p + w + 1].max())
+
+    pk, _ = find_peaks(tom, height=TOM_LOW, prominence=TOM_PROMINENCE, distance=max(1, round(TOM_MIN_DIST * fps)))
+    # o vazamento sai antes do encadeamento, senão vira semente e a "virada" atravessa o groove
+    leak = np.array([around(kick, p) > tom[p] or around(snare, p) > tom[p] / BOTH_RATIO for p in pk], dtype=bool)
+    pk = pk[~leak]
+    keep = tom[pk] >= TOM_SEED
+    n_strong = int(keep.sum())
+    gap = TOM_CHAIN_GAP * fps
+    for order in (range(len(pk)), range(len(pk) - 1, -1, -1)):  # encadeia para frente e para trás
+        last = None
+        for i in order:
+            if keep[i]:
+                last = pk[i]
+            elif last is not None and abs(pk[i] - last) <= gap:
+                keep[i], last = True, pk[i]
+    pk = pk[keep]
+    toms = [p / fps for p in pk]
+
+    # caixa no mesmo instante de um tom bem mais forte é o tom vazando na classe da caixa
+    removed = 0
+    for t in list(snares):
+        f = round(t * fps)
+        near = [p for p in pk if abs(p - f) <= w]
+        if near and around(snare, f) < BOTH_RATIO * tom[near[0]]:
+            snares.remove(t)
+            removed += 1
+    info = {"tom_strong": n_strong, "tom_weak_in_fills": len(toms) - n_strong,
+            "tom_leak_removed": int(leak.sum()), "snare_leak_removed": removed}
+    return toms, info
+
+
+# Separação dos tons pela altura: o pico espectral mais forte em 65-400 Hz, 30-150 ms depois da
+# marca do ADTOF (que vem ~20 ms cedo; o corpo do tom vem depois do estalo). Medido num rock com
+# 253 toms: três grupos nítidos em ~110, ~170 e ~205 Hz. Os grupos são modas do histograma em
+# semitons; modas a menos de TOM_MIN_SEP semitons se fundem e grupos pequenos são descartados.
+TOM_MIN_SEP = 3.0      # semitons
+TOM_MIN_GROUP = 0.10   # fração mínima dos golpes de tom para um grupo valer como tom separado
+TOM_MIN_SPLIT = 8      # com menos golpes que isso, nem tenta separar
+FLOOR_MAX_HZ = 130     # com 2 grupos, o grave só é surdo abaixo disso; senão são 2 tons de ataque
+
+
+def _tom_pitch(x: np.ndarray, sr: int, t: float, nfft: int = 1 << 15) -> float | None:
+    """Frequência (Hz) do pico espectral mais forte do corpo do tom, ou None se não há pico."""
+    from scipy.signal import find_peaks
+
+    a = int((t + 0.03) * sr)
+    seg = x[a:a + int(0.12 * sr)]
+    if len(seg) < 0.05 * sr:
+        return None
+    f = np.fft.rfftfreq(nfft, 1 / sr)
+    band = (f >= 60) & (f <= 420)
+    mag = np.abs(np.fft.rfft(seg * np.hanning(len(seg)), nfft))[band]
+    fb = f[band]
+    # pico de verdade (máximo local saliente), não a borda da banda puxada pelo bumbo
+    pk, _ = find_peaks(20 * np.log10(mag + 1e-9), prominence=6)
+    pk = pk[(fb[pk] >= 65) & (fb[pk] <= 400)]
+    return float(fb[pk[np.argmax(mag[pk])]]) if len(pk) else None
+
+
+def _tom_groups(semis: np.ndarray) -> list[float]:
+    """Centros (semitons) dos grupos de altura, do grave ao agudo; no máximo 3."""
+    grid = np.arange(0, 60, 0.25)
+    dens = np.exp(-0.5 * ((grid[:, None] - semis[None, :]) / 1.0) ** 2).sum(axis=1)
+    modes = [i for i in range(1, len(grid) - 1) if dens[i] >= dens[i - 1] and dens[i] > dens[i + 1]]
+    modes.sort(key=lambda i: -dens[i])
+    centers: list[float] = []
+    for i in modes:  # do mais forte ao mais fraco; vizinhos próximos se fundem no mais forte
+        if all(abs(grid[i] - c) >= TOM_MIN_SEP for c in centers):
+            centers.append(float(grid[i]))
+    while True:
+        centers.sort()
+        near = np.argmin(np.abs(semis[:, None] - np.array(centers)[None, :]), axis=1)
+        size = np.bincount(near, minlength=len(centers))
+        small = [k for k in range(len(centers)) if size[k] < max(3, TOM_MIN_GROUP * len(semis))]
+        if not small and len(centers) <= 3:
+            return centers
+        drop = min(small, key=lambda k: size[k]) if small else int(np.argmin(size))
+        centers.pop(drop)
+
+
+def split_toms(drums_wav: Path, times: list[float]) -> tuple[dict, dict]:
+    """Divide os golpes de tom em até 3 peças (agudo 50, médio 47, surdo 43) pela altura."""
+    import soundfile as sf
+
+    out = {p: [] for p in (50, TOM, 43)}
+    if len(times) < TOM_MIN_SPLIT:
+        out[TOM] = list(times)
+        return out, {"tom_groups_hz": []}
+    x, sr = sf.read(str(drums_wav), dtype="float32")
+    x = x.mean(axis=1) if x.ndim > 1 else x
+    hz = [_tom_pitch(x, sr, t) for t in times]
+    semis = np.array([12 * np.log2(h / 55.0) for h in hz if h])
+    if len(semis) < TOM_MIN_SPLIT:
+        out[TOM] = list(times)
+        return out, {"tom_groups_hz": []}
+    centers = _tom_groups(semis)
+    pitches = TOMS_BY_HEIGHT[len(centers)][::-1]  # do grave ao agudo, como `centers`
+    if len(centers) == 2 and 55 * 2 ** (centers[0] / 12) >= FLOOR_MAX_HZ:
+        pitches = [TOM, 50]
+    near = np.argmin(np.abs(semis[:, None] - np.array(centers)[None, :]), axis=1)
+    default = pitches[int(np.argmax(np.bincount(near, minlength=len(centers))))]  # sem altura: grupo maior
+    k = 0
+    for t, h in zip(times, hz):
+        if h:
+            out[pitches[near[k]]].append(t)
+            k += 1
+        else:
+            out[default].append(t)
+    return out, {"tom_groups_hz": [round(55 * 2 ** (c / 12)) for c in centers],
+                 "tom_split": {PIECES[p][0]: len(out[p]) for p in pitches}}
 
 
 def detect_beats(audio_wav: Path, device: str = "cpu") -> tuple[list[float], list[float]]:
@@ -135,6 +294,9 @@ def detect_beats(audio_wav: Path, device: str = "cpu") -> tuple[list[float], lis
 
     beats, downbeats = File2Beats(device=device, dbn=False)(str(audio_wav))
     return [float(b) for b in beats], [float(d) for d in downbeats]
+
+
+BRIDGE_PENALTY = 3.0  # custo de emendar a cadeia num salto irregular (~3 beats de evidência)
 
 
 def clean_beats(beats: list[float]) -> tuple[list[float], dict]:
@@ -168,12 +330,19 @@ def clean_beats(beats: list[float]) -> tuple[list[float], dict]:
             if d > 3.6 * loc[i]:
                 break
             k = int(round(d / loc[i]))
-            if k < 1 or k > 3:
-                continue
             err = abs(d - k * loc[i]) / loc[i]
-            if err > 0.3:
+            if 1 <= k <= 3 and err <= 0.3:
+                score = best[i] + (1.0 - (err / 0.3) ** 2) - 0.45 * (k - 1)
+            elif d >= 0.75 * loc[i]:
+                # Emenda: passo irregular (ex.: compasso com meio tempo a mais, intervalo de 1,5 beat)
+                # liga a cadeia com penalidade em vez de começar outra. Antes ficava só a cadeia mais
+                # longa e o resto era extrapolado com andamento fixo (medido em "Jump": 100 s
+                # extrapolados a partir de 137 s, chegando a meio tempo de erro). Intervalos < 0,75
+                # beat não emendam: são beats espúrios e saem.
+                k = min(3, max(1, k))
+                score = best[i] - BRIDGE_PENALTY - 0.45 * (k - 1)
+            else:
                 continue
-            score = best[i] + (1.0 - (err / 0.3) ** 2) - 0.45 * (k - 1)
             if score > best[j]:
                 best[j], prev[j], steps[j] = score, i, k
     j = int(np.argmax(best))
@@ -321,6 +490,28 @@ def backbeat_ratio(hits, beats, starts, bpb: int) -> float:
     return good / total if total else 0.0
 
 
+def onset_offset(hits: list[Hit], beats: list[float]) -> float:
+    """Atraso típico (s) dos ataques em relação aos beats, pela mediana dos golpes "no tempo".
+
+    O ADTOF marca os ataques ~20 ms antes dos beats do beat_this (medido em 3 músicas, igual para
+    todas as peças). Sem descontar isso, cada golpe já parte com 1/4 da tolerância da grade
+    gasto, e golpes rápidos de virada arredondam para o slot errado.
+    """
+    b = np.asarray(beats)
+    if len(b) < 3:
+        return 0.0
+    devs = []
+    for h in hits:
+        if h.pitch not in (KICK, SNARE, 42):
+            continue
+        k = int(np.clip(np.searchsorted(b, h.time), 1, len(b) - 1))
+        k = k if abs(b[k] - h.time) < abs(b[k - 1] - h.time) else k - 1
+        gap = b[min(k + 1, len(b) - 1)] - b[max(k - 1, 0)]
+        if abs(h.time - b[k]) <= 0.125 * gap:  # até 1/4 do intervalo entre beats
+            devs.append(h.time - b[k])
+    return float(np.clip(np.median(devs), -0.05, 0.05)) if len(devs) >= 20 else 0.0
+
+
 def choose_subdiv(hits: list[Hit], beats: list[float]) -> int:
     """3 (tercinas) se os golpes caem em 1/3 e 2/3 do beat bem mais do que em 1/4 e 3/4."""
     b = np.asarray(beats)
@@ -393,7 +584,6 @@ def quantize(hits: list[Hit], beats: list[float], starts: list[int], subdiv: int
 
 def ascii_grid(measures: list[Measure], start: int = 0, count: int = 4) -> str:
     """Grade em texto para conferir a transcrição sem abrir partitura."""
-    chars = {49: "CY", 42: "HH", 38: "SD", 47: "TT", 35: "BD"}
     chunk = measures[start:start + count]
     lines = []
     for p in ORDER:
@@ -401,7 +591,7 @@ def ascii_grid(measures: list[Measure], start: int = 0, count: int = 4) -> str:
             "".join("x" if p in m.slots.get(s, ()) else "." for s in range(m.beats * m.subdiv))
             for m in chunk
         ]
-        lines.append(f"{chars[p]} |" + "|".join(row) + "|")
+        lines.append(f"{CHARS[p]} |" + "|".join(row) + "|")
     return "\n".join(lines)
 
 
@@ -489,17 +679,21 @@ def transcribe(song_dir: Path, device: str = "cpu") -> dict:
     first_db = int(np.argmin(np.abs(np.asarray(beats) - downbeats[0]))) if downbeats else 0
     naive = [0] + list(range(first_db, len(beats), bpb)) if first_db else list(range(0, len(beats), bpb))
 
-    phase = bar_phase(hits, beats, downbeats, bpb)
+    # grade e compassos usam os ataques alinhados aos beats; events.json guarda os originais
+    offset = onset_offset(hits, beats)
+    grid_hits = [Hit(h.time - offset, h.pitch) for h in hits]
+    phase = bar_phase(grid_hits, beats, downbeats, bpb)
     starts = bar_starts_from_phase(phase, bpb)
-    subdiv = choose_subdiv(hits, beats)
-    measures, stats = quantize(hits, beats, starts, subdiv)
+    subdiv = choose_subdiv(grid_hits, beats)
+    measures, stats = quantize(grid_hits, beats, starts, subdiv)
     stats["beats_per_bar"] = bpb
+    stats["onset_offset_ms"] = round(1000 * offset, 1)
     stats.update(hat_info)
     stats.update(beat_fix)
     db_idx = {int(np.argmin(np.abs(np.asarray(beats) - d))) for d in downbeats}
     stats["downbeat_agreement"] = round(sum(i in db_idx for i in starts) / len(starts), 2)
-    stats["backbeat_ratio"] = round(backbeat_ratio(hits, beats, starts, bpb), 3)
-    stats["backbeat_ratio_downbeat_grid"] = round(backbeat_ratio(hits, beats, naive, bpb), 3)
+    stats["backbeat_ratio"] = round(backbeat_ratio(grid_hits, beats, starts, bpb), 3)
+    stats["backbeat_ratio_downbeat_grid"] = round(backbeat_ratio(grid_hits, beats, naive, bpb), 3)
     # sem backbeat claro nem concordância com o beat_this, as barras de compasso são chute
     stats["bars_reliable"] = stats["backbeat_ratio"] >= 0.75 and stats["downbeat_agreement"] >= 0.7
 

@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .transcribe import ORDER, PIECES, Measure
+from .transcribe import CHARS, ORDER, PIECES, Measure
 
 Event = tuple  # (pitch, slot)
 
@@ -124,7 +124,6 @@ def _ranges(idx: list) -> str:
 
 
 def grid(cluster: Cluster) -> str:
-    chars = {49: "CY", 42: "HH", 38: "SD", 47: "TT", 35: "BD"}
     n = cluster.beats * cluster.subdiv
     lines = []
     for p in ORDER:
@@ -132,7 +131,7 @@ def grid(cluster: Cluster) -> str:
             ("X" if (p, s) in cluster.pattern else ("?" if cluster.freq.get((p, s), 0) >= 0.2 else "."))
             for s in range(n)
         )
-        lines.append(f"  {chars[p]} |{row}|")
+        lines.append(f"  {CHARS[p]} |{row}|")
     return "\n".join(lines)
 
 

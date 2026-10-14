@@ -32,6 +32,7 @@
   <div class="titlebar">
     <h1 id="title">Carregando…</h1>
     <button id="renameBtn" type="button" class="ghost sm" title="Editar o nome da música" aria-label="Editar nome" hidden>✎ Editar</button>
+    <button id="reprocessBtn" type="button" class="ghost sm" title="Transcrever de novo com o algoritmo mais recente" hidden>↻ Reprocessar</button>
   </div>
   <form id="renameForm" class="row" hidden>
     <input type="text" id="renameInput" maxlength="120" style="flex:1 1 320px" aria-label="Nome da música">
@@ -169,7 +170,7 @@
 const BASE = "__BASE__";
 const id = decodeURIComponent((location.pathname.match(/\/songs\/([^/]+)/) || [])[1] || "");
 const $ = (s) => document.querySelector(s);
-const NAMES = { cymbal: "pratos", hihat: "chimbal", snare: "caixa", tom: "tom", kick: "bumbo" };
+const NAMES = { cymbal: "pratos", hihat: "chimbal", tom_hi: "tom agudo", tom: "tom médio", snare: "caixa", floor: "surdo", kick: "bumbo" };
 const PAGE = 16;
 let osmd = null, first = 1, totalBars = 0;
 let steps = null, timing = null, curIdx = -1, manualPage = false;
@@ -194,6 +195,7 @@ async function boot() {
     return;
   }
   $("#status").textContent = "";
+  $("#reprocessBtn").hidden = false;
   const link = document.createElement("a"); link.href = `${BASE}/songs/${encodeURIComponent(id)}/sheet`;
   link.textContent = "Sincronizar com partitura em PDF →"; link.className = "small";
   const st = song.stats || {};
@@ -414,10 +416,27 @@ function countInBar() {
   if (!(barSec > 0.2)) barSec = beats * 60 / ((window.songBpm || 100));
   return { beats, beatSec: barSec / beats / (audio.playbackRate || 1) };
 }
+// Atraso entre audio.play() e o som começar de fato (busca + decodificação); medido a cada início
+// e usado para disparar o play antes, de modo que o tempo 1 caia logo depois do último clique.
+let startLag = 0.15;
+function measureStartLag(pos, calledAt) {
+  const rate = audio.playbackRate || 1;
+  const poll = () => {
+    if (audio.paused) return;
+    const moved = audio.currentTime - pos;
+    if (moved <= 0.001) { requestAnimationFrame(poll); return; }
+    const lag = (performance.now() - calledAt) / 1000 - moved / rate;
+    if (lag > 0 && lag < 1) startLag = Math.min(0.5, Math.max(0.02, 0.5 * startLag + 0.5 * lag));
+  };
+  requestAnimationFrame(poll);
+}
 audio.addEventListener("play", () => {
   const bars = parseInt($("#countdown").value) || 0;
   if (skipCountdown || !bars || counting) return;
   audio.pause();                           // segura o áudio; o play de verdade vem no fim da contagem
+  // a música entra no tempo 1 do compasso atual (e não no meio dele, ou no silêncio antes do 1º tempo)
+  let target = null;
+  if (timing && timing.bars && timing.bars.length) target = Math.max(0, barStartTime(barAtTime(curTime() + 0.05)) + offsetSec());
   const { beats, beatSec } = countInBar();
   metroEnsure();
   const el = document.createElement("div");
@@ -436,7 +455,20 @@ audio.addEventListener("play", () => {
       sub.textContent = `compasso ${Math.floor(i / beats) + 1} de ${bars}`;
     }, 100 + i * beatSec * 1000));
   }
-  counting = { el, ticks, end: setTimeout(() => { cancelCountdown(); playNow().catch(() => {}); }, 100 + total * beatSec * 1000) };
+  // o play sai `startLag` antes do tempo 1 (que soa junto com onde seria o próximo clique); a busca
+  // acontece já agora, durante a contagem, para o áudio estar carregado na hora
+  const rate = audio.playbackRate || 1;
+  const heard = t0 + total * beatSec + (metroCtx.outputLatency || 0) + (metroCtx.baseLatency || 0);
+  if (target === null) target = audio.currentTime;
+  const pos = Math.max(0, target - startLag * rate);
+  audio.currentTime = pos;
+  // som começa startLag depois do play, em `pos`; chega em `target` (tempo 1) no instante `heard`
+  const callAt = heard - startLag - (target - pos) / rate;
+  counting = { el, ticks, end: setTimeout(() => {
+    cancelCountdown();
+    const calledAt = performance.now();
+    playNow().then(() => measureStartLag(pos, calledAt)).catch(() => {});
+  }, Math.max(0, (callAt - metroCtx.currentTime) * 1000)) };
 });
 $("#countdown").value = store.get("countdown", "0");
 $("#countdown").onchange = () => store.set("countdown", $("#countdown").value);
@@ -471,6 +503,17 @@ function metroDownbeats() {
     timing.downbeats = s;
   }
   return timing.downbeats;
+}
+// compasso mais comum da música e o início do 1º compasso com esse tamanho
+function metroFixedAnchor() {
+  if (!timing.fixedAnchor) {
+    const count = {};
+    for (const bar of timing.bars) count[bar.beats] = (count[bar.beats] || 0) + 1;
+    const bpb = +Object.keys(count).sort((x, y) => count[y] - count[x])[0] || 4;
+    const bar = timing.bars.find((x) => x.beats === bpb) || timing.bars[0];
+    timing.fixedAnchor = { bpb, at: bar ? bar.start : timing.beats[0] };
+  }
+  return timing.fixedAnchor;
 }
 // cliques → volume geral → pan → limitador → saída (o limitador deixa passar de 100% sem distorcer)
 let metroBus = null, metroPanner = null;
@@ -512,11 +555,13 @@ function metroTick() {
   const play = (t, level) => { if (t >= metroFrom && t < horizon && t > mediaNow - 0.02) metroClick(ctxNow + (t - mediaNow) / rate, level); };
   const bpm = parseFloat($("#metroBpm").value);
   if (metroGrid() === "fixed" && bpm >= 30 && bpm <= 300) {
-    // grade constante ancorada no 1º tempo detectado; BPM em tempo da música (a velocidade escala junto)
-    const a = b[0] + off, step = 60 / bpm / sub, bpb = (timing.bars[0] && timing.bars[0].beats) || 4;
-    for (let n = Math.max(0, Math.ceil((metroFrom - a) / step)); a + n * step < horizon; n++) {
+    // grade constante ancorada no tempo 1 do 1º compasso completo (o 1º compasso costuma ser
+    // anacruse); BPM em tempo da música (a velocidade escala junto)
+    const { bpb, at } = metroFixedAnchor(), a = at + off, step = 60 / bpm / sub;
+    const first = Math.ceil((Math.max(metroFrom, b[0] + off) - a) / step);
+    for (let n = first; a + n * step < horizon; n++) {
       const beat = Math.floor(n / sub);
-      play(a + n * step, n % sub ? 2 : (beat % bpb === 0 ? 0 : 1));
+      play(a + n * step, n % sub ? 2 : (((beat % bpb) + bpb) % bpb === 0 ? 0 : 1));
     }
   } else {
     const down = metroDownbeats();
@@ -615,6 +660,14 @@ $("#renameBtn").onclick = () => {
   $("#renameInput").value = $("#title").textContent;
   $("#renameForm").hidden = false; $("#renameBtn").hidden = true; $("#renameMsg").textContent = "";
   $("#renameInput").focus(); $("#renameInput").select();
+};
+$("#reprocessBtn").onclick = async () => {
+  if (!confirm("Transcrever esta música de novo com o algoritmo mais recente?\n\n" +
+               "Leva alguns minutos. Correções feitas no editor de padrões serão descartadas " +
+               "(ficam guardadas em backup no servidor).")) return;
+  const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/reprocess`, { method: "POST" });
+  if (!r.ok) { let d = r.statusText; try { d = (await r.json()).detail || d; } catch {} alert(d); return; }
+  location.reload();
 };
 $("#renameCancel").onclick = () => { $("#renameForm").hidden = true; $("#renameBtn").hidden = false; };
 $("#renameForm").addEventListener("submit", async (ev) => {
