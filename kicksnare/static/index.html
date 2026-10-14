@@ -30,7 +30,16 @@
 
   <div class="row" style="justify-content:space-between;margin:48px 0 16px">
     <h2 style="margin:0">Músicas</h2>
-    <label id="mineWrap" class="muted small" hidden style="display:none"><input type="checkbox" id="mine">só as minhas</label>
+    <span class="row">
+      <label class="muted small">Organizar
+        <select id="group">
+          <option value="artist">Letra → Banda</option>
+          <option value="title">Letra → Música</option>
+          <option value="flat">Lista simples</option>
+        </select>
+      </label>
+      <label id="mineWrap" class="muted small" hidden style="display:none"><input type="checkbox" id="mine">só as minhas</label>
+    </span>
   </div>
   <div class="panel" id="list"><span class="muted">Carregando…</span></div>
 </main>
@@ -50,16 +59,47 @@ function etaText(e) {
 
 function fmt(sec) { sec = Math.max(0, Math.round(sec)); return Math.floor(sec / 60) + "m" + String(sec % 60).padStart(2, "0") + "s"; }
 
+const collator = new Intl.Collator("pt-BR", { sensitivity: "base", numeric: true });
+const letterOf = (t) => {
+  const c = (t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().charAt(0).toUpperCase();
+  return /[A-Z]/.test(c) ? c : "#";
+};
+const heading = (text, tag) => { const h = document.createElement(tag); h.textContent = text; h.style.margin = tag === "h3" ? "14px 0 4px" : "6px 0 2px"; return h; };
+
 function render(songs) {
   const list = $("#list");
   if (!songs.length) { list.innerHTML = '<span class="muted">Nenhuma música ainda.</span>'; return; }
-  list.replaceChildren(...songs.map((s) => {
+  const mode = $("#group").value;
+  const name = (s) => s.title || s.source || "";
+  if (mode === "flat") { list.replaceChildren(...songs.map(songRow)); return; }
+  // Letra → (banda →) músicas; sem banda cai em "Sem banda" (ordenado por nome da música)
+  const key = (s) => (mode === "artist" ? (s.artist || "") : name(s));
+  const sorted = [...songs].sort((a, b) => {
+    if (mode === "artist" && !a.artist !== !b.artist) return a.artist ? -1 : 1;
+    return collator.compare(key(a), key(b)) || collator.compare(name(a), name(b));
+  });
+  const out = []; let curLetter = null, curBand = null;
+  for (const s of sorted) {
+    const noBand = mode === "artist" && !s.artist;
+    const L = noBand ? "—" : letterOf(key(s));
+    if (L !== curLetter) { curLetter = L; curBand = null; out.push(heading(noBand ? "Sem banda" : L, "h3")); }
+    if (mode === "artist" && !noBand && s.artist !== curBand) { curBand = s.artist; out.push(heading(s.artist, "h4")); }
+    out.push(songRow(s));
+  }
+  list.replaceChildren(...out);
+}
+
+function songRow(s) {
+  {
     const row = document.createElement("div"); row.className = "song";
     const left = document.createElement("div");
     const title = document.createElement(s.status === "done" ? "a" : "span");
     title.className = "title"; title.textContent = s.title || s.source;
+    if (s.artist && $("#group").value !== "artist") {
+      const ar = document.createElement("span"); ar.className = "muted"; ar.textContent = " — " + s.artist; left.append(title, ar);
+    }
     if (s.status === "done") title.href = BASE + "/songs/" + encodeURIComponent(s.id);
-    left.append(title);
+    if (!left.contains(title)) left.append(title);
     const meta = document.createElement("div"); meta.className = "muted";
     meta.style.fontSize = ".85rem";
     if (isAdmin && s.owner) {
@@ -90,20 +130,31 @@ function render(songs) {
     chip.className = "chip " + ({ done: "ok", error: "err", running: "warn" }[s.status] || "");
     chip.textContent = { done: "pronto", error: "erro", running: STAGES[s.stage] || "processando", queued: "na fila" }[s.status];
     right.append(chip);
-    const rn = document.createElement("button"); rn.textContent = "Renomear";
+    const rn = document.createElement("button"); rn.textContent = "Editar";
     rn.onclick = () => {
-      const inp = document.createElement("input"); inp.type = "text"; inp.maxLength = 120; inp.value = s.title || "";
-      inp.style.cssText = "flex:1 1 220px;min-width:0";
+      const t = document.createElement("input"); t.type = "text"; t.maxLength = 120; t.value = s.title || "";
+      t.placeholder = "Nome da música";
+      const a = document.createElement("input"); a.type = "text"; a.maxLength = 120; a.value = s.artist || "";
+      a.placeholder = "Banda / autor";
+      const wrap = document.createElement("div"); wrap.className = "row"; wrap.style.margin = "4px 0";
+      for (const i of [t, a]) i.style.cssText = "flex:1 1 200px;min-width:0";
+      const ok = document.createElement("button"); ok.textContent = "Salvar"; ok.className = "primary";
+      const cancel = document.createElement("button"); cancel.textContent = "Cancelar";
       const save = async () => {
-        const v = inp.value.trim(); renaming = false; if (!v || v === s.title) { load(); return; }
-        const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(s.id)}`, { method: "PATCH",
-          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: v }) });
-        if (!r.ok) { try { alert((await r.json()).detail); } catch {} }
-        load();
+        const body = {};
+        if (t.value.trim() && t.value.trim() !== (s.title || "")) body.title = t.value.trim();
+        if (a.value.trim() !== (s.artist || "")) body.artist = a.value.trim();
+        if (Object.keys(body).length) {
+          const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(s.id)}`, { method: "PATCH",
+            headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+          if (!r.ok) { try { alert((await r.json()).detail); } catch {} }
+        }
+        renaming = false; load();
       };
-      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); if (e.key === "Escape") { renaming = false; load(); } });
-      title.replaceWith(inp); inp.focus(); inp.select(); renaming = true;
-      rn.textContent = "Salvar"; rn.className = "primary"; rn.onclick = save;
+      ok.onclick = save; cancel.onclick = () => { renaming = false; load(); };
+      wrap.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); if (e.key === "Escape") { renaming = false; load(); } });
+      wrap.append(t, a, ok, cancel);
+      title.replaceWith(wrap); t.focus(); t.select(); renaming = true;
     };
     right.append(rn);
     if (s.status !== "running") {
@@ -124,7 +175,7 @@ function render(songs) {
     }
     row.append(left, right);
     return row;
-  }));
+  }
 }
 
 async function load() {
@@ -156,6 +207,8 @@ fetch(BASE + "/api/auth/me").then((r) => r.json()).then((u) => {
   load();
 }).catch(() => {});
 $("#mine").onchange = load;
+try { $("#group").value = localStorage.getItem("ks-group") || "artist"; } catch {}
+$("#group").onchange = () => { try { localStorage.setItem("ks-group", $("#group").value); } catch {} load(); };
 load(); setInterval(() => { if (!renaming) load(); }, 3000);
 </script>
 </body>

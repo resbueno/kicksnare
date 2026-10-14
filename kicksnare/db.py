@@ -53,8 +53,8 @@ def connect():
     cols = {r["name"] for r in con.execute("PRAGMA table_info(songs)")}
     if "owner_id" not in cols:      # migração: músicas existentes ficam sem dono até alguém assumir
         con.execute("ALTER TABLE songs ADD COLUMN owner_id INTEGER")
-    for col, ddl in (("duration", "REAL"), ("stage_started", "REAL"), ("timings", "TEXT"), ("progress", "REAL")):
-        if col not in cols:         # estimativa de tempo: duração do áudio, início da etapa, tempos e progresso
+    for col, ddl in (("duration", "REAL"), ("stage_started", "REAL"), ("timings", "TEXT"), ("progress", "REAL"), ("artist", "TEXT")):
+        if col not in cols:         # estimativa de tempo + banda/autor informado pelo usuário
             con.execute(f"ALTER TABLE songs ADD COLUMN {col} {ddl}")
     ucols = {r["name"] for r in con.execute("PRAGMA table_info(users)")}
     if "is_admin" not in ucols:

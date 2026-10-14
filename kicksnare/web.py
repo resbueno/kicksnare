@@ -381,31 +381,47 @@ def get_song(song_id: str) -> dict:
 
 
 class Rename(BaseModel):
-    title: str
+    title: str | None = None
+    artist: str | None = None
+
+
+def _clean(text: str | None) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", text or "")).strip()
 
 
 @app.patch("/api/songs/{song_id}")
 def rename_song(song_id: str, body: Rename) -> dict:
-    """Muda o nome exibido (e usado nos downloads). Vale para o dono e para o admin."""
+    """Edita nome da música e/ou banda (autor). Vale para o dono e para o admin."""
     song = _song(song_id)
-    title = re.sub(r"[\x00-\x1f\x7f]", " ", body.title or "").strip()
-    title = re.sub(r"\s+", " ", title)
-    if not title:
-        raise HTTPException(400, "o nome não pode ficar vazio")
-    if len(title) > 120:
-        raise HTTPException(400, "nome longo demais (máximo de 120 caracteres)")
-    db.update(song_id, title=title)
-    song_dir = DATA_DIR / song_id
-    meta = song_dir / "meta.json"
-    try:
-        info = json.loads(meta.read_text()) if meta.exists() else {}
-        info["title"] = title
-        meta.write_text(json.dumps(info))
-        if song["status"] == "done" and (song_dir / "measures.json").exists():
-            _, _, _, edited = _load(song_dir)        # o título também vai no MusicXML
-            _rebuild_score(song_dir, edited)
-    except (OSError, ValueError, KeyError):
-        pass
+    fields: dict = {}
+    if body.title is not None:
+        title = _clean(body.title)
+        if not title:
+            raise HTTPException(400, "o nome não pode ficar vazio")
+        if len(title) > 120:
+            raise HTTPException(400, "nome longo demais (máximo de 120 caracteres)")
+        fields["title"] = title
+    if body.artist is not None:
+        artist = _clean(body.artist)
+        if len(artist) > 120:
+            raise HTTPException(400, "nome da banda longo demais (máximo de 120 caracteres)")
+        fields["artist"] = artist or None
+    if not fields:
+        return song
+    db.update(song_id, **fields)
+    title = fields.get("title")
+    if title and title != song.get("title"):
+        song_dir = DATA_DIR / song_id
+        meta = song_dir / "meta.json"
+        try:
+            info = json.loads(meta.read_text()) if meta.exists() else {}
+            info["title"] = title
+            meta.write_text(json.dumps(info))
+            if song["status"] == "done" and (song_dir / "measures.json").exists():
+                _, _, _, edited = _load(song_dir)        # o título também vai no MusicXML
+                _rebuild_score(song_dir, edited)
+        except (OSError, ValueError, KeyError):
+            pass
     return _song(song_id)
 
 

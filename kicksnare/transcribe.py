@@ -55,6 +55,12 @@ class Measure:
 # 0,10 e abaixo de 0,06 aparece 1-3% de ruído fora do tempo. 0,08 é o compromisso.
 KICK_THRESHOLD = 0.08
 
+# Toms: o limiar padrão do ADTOF (0,32) perde viradas. Medido em 4 músicas: 0,32 -> 0,18 triplica
+# ou quadruplica a contagem (11->42, 28->49, 139->240). Escolhe-se o limiar mais sensível cuja
+# contagem de toms não passa de TOM_MAX_RATIO x a de caixas (acima disso é ruído/vazamento da caixa).
+TOM_CANDIDATES = (0.14, 0.18, 0.25)
+TOM_MAX_RATIO = 1.0
+
 HAT_CANDIDATES = (0.03, 0.06, 0.10, 0.15, 0.22)  # do mais sensível ao padrão do ADTOF
 HAT_MAX_RATIO = 1.1  # hats detectados não podem passar 110% dos ataques agudos brutos
 
@@ -91,11 +97,13 @@ def detect_hits(drums_wav: Path, device: str = "cpu") -> tuple[list[Hit], dict]:
     ref_count = len(_hf_onsets(drums_wav))
 
     kick_idx = LABELS_5.index(35)
+    tom_idx = LABELS_5.index(47)
 
-    def pick(hat_threshold: float) -> dict:
+    def pick(hat_threshold: float, tom_threshold: float = FRAME_RNN_THRESHOLDS[tom_idx]) -> dict:
         thr = list(FRAME_RNN_THRESHOLDS)
         thr[hat_idx] = hat_threshold
         thr[kick_idx] = KICK_THRESHOLD
+        thr[tom_idx] = tom_threshold
         return PeakPicker(thresholds=thr, fps=100).pick(pred, labels=LABELS_5, label_offset=0)[0]
 
     chosen, peaks = FRAME_RNN_THRESHOLDS[hat_idx], None
@@ -108,8 +116,16 @@ def detect_hits(drums_wav: Path, device: str = "cpu") -> tuple[list[Hit], dict]:
     if peaks is None:
         peaks = pick(chosen)
 
+    tom_chosen = FRAME_RNN_THRESHOLDS[tom_idx]
+    n_snare = len(peaks.get(38, []))
+    for th in TOM_CANDIDATES:
+        cand = pick(chosen, th)
+        if len(cand.get(47, [])) <= TOM_MAX_RATIO * max(n_snare, 1):
+            tom_chosen, peaks = th, cand
+            break
+
     hits = [Hit(float(t), int(pitch)) for pitch, times in peaks.items() for t in times]
-    info = {"hihat_threshold": chosen, "kick_threshold": KICK_THRESHOLD, "hf_onsets": ref_count,
+    info = {"tom_threshold": tom_chosen, "tom_hits": len(peaks.get(47, [])), "hihat_threshold": chosen, "kick_threshold": KICK_THRESHOLD, "hf_onsets": ref_count,
             "hihat_hits": len(peaks.get(42, [])), "kick_hits": len(peaks.get(35, []))}
     return sorted(hits, key=lambda h: (h.time, h.pitch)), info
 

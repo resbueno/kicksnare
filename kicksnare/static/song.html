@@ -66,6 +66,15 @@
           </select>
         </div>
       </div>
+      <div class="field">
+        <label class="lbl" for="countdown" title="Compassos de metrônomo antes de a música começar">Contagem</label>
+        <div class="ctl">
+          <select id="countdown">
+            <option value="0">Sem</option><option value="1">1 compasso</option>
+            <option value="2">2 compassos</option><option value="4">4 compassos</option>
+          </select>
+        </div>
+      </div>
       <div class="field" style="grid-column:1/-1">
         <span class="lbl" title="Atalho: tecla M liga/desliga">Metrônomo</span>
         <div class="ctl">
@@ -188,7 +197,7 @@ async function boot() {
   const link = document.createElement("a"); link.href = `${BASE}/songs/${encodeURIComponent(id)}/sheet`;
   link.textContent = "Sincronizar com partitura em PDF →"; link.className = "small";
   const st = song.stats || {};
-  chip(`${st.bars} compassos`); chip(`${Math.round(st.bpm_median)} BPM`);
+  chip(`${st.bars} compassos`); chip(`${Math.round(st.bpm_median)} BPM`); window.songBpm = st.bpm_median;
   chip(st.subdiv === 3 ? "grade de tercinas" : "grade de semicolcheias");
   chip(st.bars_reliable ? "compassos confiáveis" : "compassos pouco confiáveis", st.bars_reliable ? "ok" : "warn");
   link.style.marginLeft = "auto"; $("#chips").append(link);
@@ -326,6 +335,7 @@ function stepIndexAt(q) {
 const offsetSec = () => (parseFloat($("#offset").value) || 0) / 1000;
 const curTime = () => audio.currentTime - offsetSec();
 const barStartTime = (n) => timing.bars[Math.min(Math.max(n, 1), timing.bars.length) - 1].start;
+const barAtTime = (t) => { let n = 1; for (const b of timing.bars) { if (b.start <= t + 0.001) n = b.n; else break; } return n; };
 const barEndTime = (n) => n >= timing.bars.length ? timing.beats[timing.beats.length - 1] : timing.bars[n].start;
 
 function syncCursor(force) {
@@ -384,6 +394,52 @@ function tick() {
   if (!audio.paused) requestAnimationFrame(tick);
 }
 audio.addEventListener("play", () => requestAnimationFrame(tick));
+
+// ---------- contagem regressiva em compassos, com click de metrônomo ----------
+let counting = null, skipCountdown = false;
+function cancelCountdown() {
+  if (!counting) return;
+  clearTimeout(counting.end); counting.ticks.forEach(clearTimeout); counting.el.remove(); counting = null;
+}
+function playNow() { skipCountdown = true; return audio.play().finally(() => { skipCountdown = false; }); }
+function click(accent, when) { metroClick(when, accent ? 0 : 1); }   // mesmo som/volume/pan do metrônomo
+// compasso do ponto de partida: nº de tempos e duração de cada um (ajustada pela velocidade)
+function countInBar() {
+  let beats = 4, barSec = null;
+  if (timing && timing.bars && timing.bars.length) {
+    const n = Math.min(Math.max(barAtTime(curTime()), 1), timing.bars.length);
+    beats = timing.bars[n - 1].beats || 4;
+    barSec = barEndTime(n) - barStartTime(n);
+  }
+  if (!(barSec > 0.2)) barSec = beats * 60 / ((window.songBpm || 100));
+  return { beats, beatSec: barSec / beats / (audio.playbackRate || 1) };
+}
+audio.addEventListener("play", () => {
+  const bars = parseInt($("#countdown").value) || 0;
+  if (skipCountdown || !bars || counting) return;
+  audio.pause();                           // segura o áudio; o play de verdade vem no fim da contagem
+  const { beats, beatSec } = countInBar();
+  metroEnsure();
+  const el = document.createElement("div");
+  el.style.cssText = "position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;" +
+    "font:700 18vmin/1 system-ui,sans-serif;color:#fff;background:rgba(0,0,0,.55);z-index:50;cursor:pointer";
+  el.title = "Clique para cancelar";
+  const big = document.createElement("div"), sub = document.createElement("div");
+  sub.style.cssText = "font:600 4vmin/1.4 system-ui,sans-serif;opacity:.8";
+  el.append(big, sub); document.body.append(el);
+  el.onclick = cancelCountdown;
+  const total = bars * beats, t0 = metroCtx.currentTime + 0.1, ticks = [];
+  for (let i = 0; i < total; i++) {
+    click(i % beats === 0, t0 + i * beatSec);
+    ticks.push(setTimeout(() => {          // número do tempo + compasso restante, em sincronia com o click
+      big.textContent = (i % beats) + 1;
+      sub.textContent = `compasso ${Math.floor(i / beats) + 1} de ${bars}`;
+    }, 100 + i * beatSec * 1000));
+  }
+  counting = { el, ticks, end: setTimeout(() => { cancelCountdown(); playNow().catch(() => {}); }, 100 + total * beatSec * 1000) };
+});
+$("#countdown").value = store.get("countdown", "0");
+$("#countdown").onchange = () => store.set("countdown", $("#countdown").value);
 for (const ev of ["seeked", "timeupdate", "pause"]) audio.addEventListener(ev, () => syncCursor(false));
 
 $("#speed").onchange = () => { audio.playbackRate = parseFloat($("#speed").value); store.set("speed", $("#speed").value); };
@@ -397,7 +453,9 @@ $("#markA").onclick = () => { $("#loopA").value = currentBar(); if (!$("#loopB")
 $("#markB").onclick = () => { $("#loopB").value = currentBar(); if (!$("#loopA").value) $("#loopA").value = currentBar(); };
 document.addEventListener("keydown", (e) => {
   if (e.code !== "Space" || /INPUT|SELECT|TEXTAREA|BUTTON/.test(document.activeElement.tagName)) return;
-  e.preventDefault(); audio.paused ? audio.play() : audio.pause();
+  e.preventDefault();
+  if (counting) { cancelCountdown(); return; }
+  audio.paused ? audio.play() : audio.pause();
 });
 $("#follow").onchange = () => syncCursor(true);
 
@@ -530,7 +588,7 @@ function setTrack(track, keepState) {
     a.addEventListener("loadedmetadata", function once() {
       a.removeEventListener("loadedmetadata", once);
       a.currentTime = t; a.playbackRate = rate;
-      if (wasPlaying) a.play().catch(() => {});
+      if (wasPlaying) { skipCountdown = true; a.play().catch(() => {}).finally(() => { skipCountdown = false; }); }
     });
   }
   try { localStorage.setItem("ks:track", track); } catch {}
