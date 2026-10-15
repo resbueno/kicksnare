@@ -1,4 +1,4 @@
-"""Fila de jobs em SQLite. Sem Redis: 1 worker, 1 música por vez (VPS de 4 GB)."""
+"""Fila de jobs em SQLite. Sem Redis: 1 worker, 1 música por vez, alternando entre os usuários."""
 import json
 import sqlite3
 import time
@@ -88,10 +88,34 @@ def enqueue(song_id: str, source: str, title: str | None = None, owner_id: int |
         return _row(con.execute("SELECT * FROM songs WHERE id=?", (song_id,)).fetchone())
 
 
+def _fair_queue(con) -> list:
+    """Músicas na fila na ordem em que o worker vai pegá-las: alterna entre os donos.
+
+    Vai à frente quem está há mais tempo sem ter uma música iniciada (quem nunca teve, primeiro);
+    entre as músicas do mesmo dono vale a ordem de chegada. Assim quem enfileira muitas músicas
+    não faz os outros esperarem todas elas.
+    """
+    queued = con.execute("SELECT * FROM songs WHERE status='queued' ORDER BY created").fetchall()
+    last = {r["owner_id"]: r["last"] for r in con.execute(
+        "SELECT owner_id, MAX(started) AS last FROM songs WHERE started IS NOT NULL GROUP BY owner_id")}
+    pending: dict = {}
+    for r in queued:
+        pending.setdefault(r["owner_id"], []).append(r)
+    order, now = [], time.time()
+    while pending:
+        owner = min(pending, key=lambda o: (last.get(o) or 0.0, pending[o][0]["created"]))
+        order.append(pending[owner].pop(0))
+        if not pending[owner]:
+            del pending[owner]
+        last[owner] = now + len(order)   # simula: acabou de ser atendido, vai para o fim da vez
+    return order
+
+
 def claim_next() -> dict | None:
     with connect() as con:
         con.execute("BEGIN IMMEDIATE")
-        r = con.execute("SELECT * FROM songs WHERE status='queued' ORDER BY created LIMIT 1").fetchone()
+        queue = _fair_queue(con)
+        r = queue[0] if queue else None
         if not r:
             con.execute("COMMIT")
             return None
@@ -259,11 +283,8 @@ def set_user_status(user_id: int, status: str) -> None:
 def active_songs() -> list[dict]:
     """Fila inteira (todos os usuários), na ordem em que o worker as pega."""
     with connect() as con:
-        rows = con.execute(
-            "SELECT id, status, stage, created, started, duration, stage_started, progress, timings "
-            "FROM songs WHERE status IN ('queued','running') ORDER BY (status='running') DESC, created"
-        )
-        return [_row(r) for r in rows]
+        running = con.execute("SELECT * FROM songs WHERE status='running' ORDER BY started").fetchall()
+        return [_row(r) for r in [*running, *_fair_queue(con)]]
 
 
 def history(limit: int = 15) -> list[dict]:

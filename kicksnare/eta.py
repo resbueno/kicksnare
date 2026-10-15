@@ -14,7 +14,7 @@ STAGES = ("ingest", "separate", "transcribe", "finalize")
 DEFAULTS = {
     "ingest": (8.0, 0.03),
     # 2,0 medido com htdemucs; o htdemucs_ft levou ~4,4x mais no mesmo trecho
-    "separate": (6.0, 2.0 * (4.4 if os.environ.get("KICKSNARE_DEMUCS_MODEL", "htdemucs_ft") == "htdemucs_ft" else 1.0)),
+    "separate": (6.0, 2.0 * (4.4 if os.environ.get("KICKSNARE_DEMUCS_MODEL", "htdemucs") == "htdemucs_ft" else 1.0)),
     "transcribe": (14.0, 0.55),
     "finalize": (3.0, 0.08),
 }

@@ -19,8 +19,8 @@ def _children_peak_mb() -> float:
 # Modelo do Demucs. htdemucs_ft (4 redes, uma por instrumento) vaza menos baixo/guitarra na bateria
 # que o htdemucs (medido num rock, trecho de 60 s: contraste golpe/fundo em 80-1500 Hz de 19,6 para
 # 21,0 dB), mas leva ~4,4x mais (75 s -> 330 s de CPU por minuto de áudio). --shifts 2 dobrou o tempo
-# sem ganho mensurável no mesmo trecho; fica em 1.
-MODEL = os.environ.get("KICKSNARE_DEMUCS_MODEL", "htdemucs_ft")
+# sem ganho mensurável no mesmo trecho; fica em 1. Padrão htdemucs: 4-8 min por música neste servidor.
+MODEL = os.environ.get("KICKSNARE_DEMUCS_MODEL", "htdemucs")
 SHIFTS = int(os.environ.get("KICKSNARE_DEMUCS_SHIFTS", "1"))
 LEGACY = {"model": "htdemucs", "shifts": 1}   # músicas separadas antes de existir separation.json
 BAG_SIZE = {"htdemucs_ft": 4, "mdx": 4, "mdx_extra": 4, "mdx_q": 4, "mdx_extra_q": 4}  # redes por modelo
