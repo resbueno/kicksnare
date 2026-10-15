@@ -44,75 +44,145 @@ def needs_separation(song_dir: Path) -> bool:
     return done != separation_config()
 
 
-def separate_drums(audio: Path, segment: int = 7, on_progress=None) -> tuple[Path, dict]:
-    """Gera <dir do audio>/drums.wav, bass.wav e no_drums.wav. `on_progress(0..1)` recebe o avanço do Demucs."""
-    import re
+STEMS = ("drums", "bass", "other", "vocals")
+# Músicas longas vão ao Demucs em blocos: ele guarda as 4 faixas da música inteira na memória e uma
+# de 7,4 min passou de 2,7 GB e foi morta pelo limite de 3 GB do worker. Em blocos de 3 min a memória
+# fica igual para qualquer duração; os blocos se sobrepõem 4 s e a emenda é um crossfade linear.
+CHUNK_S = 180
+OVERLAP_S = 4
+SINGLE_MAX_S = 270      # até 4,5 min vai inteira (sem emenda nenhuma)
 
-    out = audio.parent / "drums.wav"
-    if not needs_separation(audio.parent):
-        return out, {"cached": True}
-    model, cfg = MODEL, separation_config()
+
+def _demucs(wav: Path, tmp: Path, segment: int, on_progress=None) -> Path:
+    """Roda o Demucs (4 faixas) num wav e devolve a pasta com drums/bass/other/vocals.wav."""
+    import re
 
     # Uma barra do tqdm por rede e por shift, cada uma de 0 a 100%. "63.0/63.0 [" casa só as barras
     # do áudio (em segundos); as do download dos pesos ("80.2M/80.2M") ficam de fora.
     pct = re.compile(r"(\d{1,3})%\|[^|]*\|\s*[\d.]+/[\d.]+ \[")
-    passes = BAG_SIZE.get(model, 1) * SHIFTS
+    passes = BAG_SIZE.get(MODEL, 1) * SHIFTS
+    cmd = [
+        sys.executable, "-m", "demucs",
+        "-n", MODEL, "--shifts", str(SHIFTS),
+        "--segment", str(segment), "-j", "1", "-d", "cpu",
+        "-o", str(tmp), str(wav),
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    tail, last, done = b"", -1, 0
+    while True:
+        chunk = os.read(proc.stderr.fileno(), 4096)    # o tqdm atualiza com \r, não com \n
+        if not chunk:
+            break
+        tail = (tail + chunk)[-4096:]
+        m = pct.findall(tail.decode("utf-8", "ignore"))
+        if m and int(m[-1]) != last:
+            if int(m[-1]) < last:   # começou a barra da próxima rede/shift
+                done += 1
+            last = int(m[-1])
+            if on_progress:
+                on_progress(min(1.0, (min(done, passes - 1) + last / 100) / passes))
+    proc.wait()
+    if proc.returncode != 0:
+        msg = "\n".join(tail.decode("utf-8", "ignore").replace("\r", "\n").strip().splitlines()[-8:])
+        if proc.returncode in (-9, 137):
+            msg = "sem memória (processo encerrado pelo sistema)\n" + msg
+        raise RuntimeError(f"demucs falhou:\n{msg}")
+    return tmp / MODEL / wav.stem
+
+
+def _demucs_chunked(audio: Path, tmp: Path, segment: int, on_progress=None) -> Path:
+    """Demucs em blocos de CHUNK_S com OVERLAP_S de sobreposição; emenda as faixas com crossfade."""
+    import numpy as np
+    import soundfile as sf
+
+    info = sf.info(str(audio))
+    sr, n = info.samplerate, info.frames
+    step, ov = CHUNK_S * sr, OVERLAP_S * sr
+    starts = list(range(0, n, step))
+    if len(starts) > 1 and n - starts[-1] < 20 * sr:     # último pedaço curto: junta ao anterior
+        starts.pop()
+    out_dir = tmp / "stems"
+    out_dir.mkdir()
+    writers = {s: sf.SoundFile(str(out_dir / f"{s}.wav"), "w", sr, 2, subtype="PCM_16") for s in STEMS}
+    held = {}                                             # final de cada faixa, guardado para a emenda
+    fade = np.linspace(0.0, 1.0, ov, dtype=np.float32)[:, None]
+    try:
+        for i, st in enumerate(starts):
+            a = st - ov if i else 0
+            b = starts[i + 1] if i + 1 < len(starts) else n
+            x, _ = sf.read(str(audio), start=a, stop=b, dtype="float32", always_2d=True)
+            if x.shape[1] == 1:
+                x = np.repeat(x, 2, axis=1)
+            piece = tmp / f"bloco{i}.wav"
+            sf.write(str(piece), x, sr, subtype="FLOAT")
+            report = (lambda p, i=i: on_progress((i + p) / len(starts))) if on_progress else None
+            stems = _demucs(piece, tmp / f"d{i}", segment, report)
+            last = i + 1 == len(starts)
+            for s in STEMS:
+                y, _ = sf.read(str(stems / f"{s}.wav"), dtype="float32", always_2d=True)
+                if i:
+                    head = min(ov, len(y), len(held[s]))
+                    y[:head] = held[s][:head] * (1 - fade[:head]) + y[:head] * fade[:head]
+                if last:
+                    writers[s].write(y)
+                else:
+                    writers[s].write(y[:-ov])
+                    held[s] = y[-ov:].copy()
+            shutil.rmtree(tmp / f"d{i}", ignore_errors=True)
+            piece.unlink(missing_ok=True)
+    finally:
+        for w in writers.values():
+            w.close()
+    return out_dir
+
+
+def separate_drums(audio: Path, segment: int = 7, on_progress=None) -> tuple[Path, dict]:
+    """Gera <dir do audio>/drums.wav, bass.wav e no_drums.wav. `on_progress(0..1)` recebe o avanço do Demucs."""
+    import soundfile as sf
+
+    out = audio.parent / "drums.wav"
+    if not needs_separation(audio.parent):
+        return out, {"cached": True}
+    cfg = separation_config()
+    duration = sf.info(str(audio)).duration
+    chunked = duration > SINGLE_MAX_S
     with tempfile.TemporaryDirectory(prefix="kicksnare-demucs-") as tmp:
-        cmd = [
-            sys.executable, "-m", "demucs",
-            "-n", model, "--shifts", str(SHIFTS),
-            "--segment", str(segment), "-j", "1", "-d", "cpu",
-            "-o", tmp, str(audio),
-        ]
         started = time.monotonic()
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        tail, last, done = b"", -1, 0
-        while True:
-            chunk = os.read(proc.stderr.fileno(), 4096)    # o tqdm atualiza com \r, não com \n
-            if not chunk:
-                break
-            tail = (tail + chunk)[-4096:]
-            m = pct.findall(tail.decode("utf-8", "ignore"))
-            if m and int(m[-1]) != last:
-                if int(m[-1]) < last:   # começou a barra da próxima rede/shift
-                    done += 1
-                last = int(m[-1])
-                if on_progress:
-                    on_progress(min(1.0, (min(done, passes - 1) + last / 100) / passes))
-        proc.wait()
+        stems = (_demucs_chunked if chunked else _demucs)(audio, Path(tmp), segment, on_progress)
         elapsed = time.monotonic() - started
-        if proc.returncode != 0:
-            msg = "\n".join(tail.decode("utf-8", "ignore").replace("\r", "\n").strip().splitlines()[-8:])
-            raise RuntimeError(f"demucs falhou:\n{msg}")
         for name in DERIVED:
             (audio.parent / name).unlink(missing_ok=True)
-        stems = Path(tmp) / model / audio.stem
         shutil.move(str(stems / "drums.wav"), out)
         if (stems / "bass.wav").exists():
             shutil.copyfile(stems / "bass.wav", audio.parent / "bass.wav")
         _sum_stems([stems / f"{s}.wav" for s in OTHER_STEMS], audio.parent / "no_drums.wav")
 
     (audio.parent / "separation.json").write_text(json.dumps(cfg))
-    return out, {"cached": False, **cfg, "seconds": round(elapsed, 1), "peak_ram_mb": round(_children_peak_mb())}
+    return out, {"cached": False, **cfg, "seconds": round(elapsed, 1), "chunked": chunked,
+                 "peak_ram_mb": round(_children_peak_mb())}
 
 
-def _sum_stems(parts: list, out: Path) -> None:
-    """Soma as faixas que existirem (ex.: baixo + voz + resto = música sem bateria)."""
+def _sum_stems(parts: list, out: Path, block: int = 1 << 20) -> None:
+    """Soma as faixas que existirem (ex.: baixo + voz + resto = música sem bateria), em blocos para
+    não carregar a música inteira na memória."""
     import numpy as np
     import soundfile as sf
 
-    total, sr = None, None
-    for p in parts:
-        if not p.exists():
-            continue
-        x, sr = sf.read(str(p), dtype="float32")
-        if total is None:
-            total = x
-        else:
-            n = min(len(total), len(x))
-            total = total[:n] + x[:n]
-    if total is not None:
-        sf.write(str(out), np.clip(total, -1.0, 1.0), sr, subtype="PCM_16")
+    files = [sf.SoundFile(str(p)) for p in parts if p.exists()]
+    if not files:
+        return
+    try:
+        n = min(f.frames for f in files)
+        with sf.SoundFile(str(out), "w", files[0].samplerate, files[0].channels, subtype="PCM_16") as w:
+            done = 0
+            while done < n:
+                k = min(block, n - done)
+                total = sum(f.read(k, dtype="float32", always_2d=True) for f in files)
+                w.write(np.clip(total, -1.0, 1.0))
+                done += k
+    finally:
+        for f in files:
+            f.close()
 
 
 def ensure_no_drums(song_dir: Path) -> Path:
