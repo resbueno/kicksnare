@@ -8,7 +8,7 @@ import sys
 import time
 import traceback
 
-from . import db, identify
+from . import db, identify, sections
 from .ingest import DATA_DIR, ingest
 from .separate import encode_mp3, ensure_no_drums, needs_separation, separate_drums
 
@@ -89,6 +89,11 @@ def process(song: dict) -> None:
 
     _set(sid, "finalize", "Gerando áudio para o player")
     ensure_no_drums(audio.parent)
+    try:   # partes (Intro, Verso, Refrão...) marcadas na partitura; falha aqui não derruba o job
+        parts = sections.refresh(audio.parent)
+        print(f"[{sid}] partes: " + " | ".join(f"{p['bar']}:{p['label']}" for p in parts), flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[{sid}] partes falharam: {e}", flush=True)
     for wav_name, mp3_name in (("audio.wav", "audio.mp3"), ("drums.wav", "drums-gate.mp3"), ("no_drums.wav", "no_drums.mp3")):
         mp3 = audio.parent / mp3_name
         if not mp3.exists():

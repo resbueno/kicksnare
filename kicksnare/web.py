@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import auth as authlib
-from . import db, eta as etalib, sheet as sheetlib
+from . import db, eta as etalib, sections as sectionslib, sheet as sheetlib
 from .ingest import DATA_DIR, file_song_id
 from .separate import encode_mp3, ensure_no_drums
 from .patterns import (
@@ -498,6 +498,9 @@ def reprocess(song_id: str) -> dict:
     edits = song_dir / "edits.json"
     if edits.exists():
         edits.replace(song_dir / "edits.bak.json")
+    parts = song_dir / "sections.json"           # os compassos mudam: as partes são recalculadas
+    if parts.exists():
+        parts.replace(song_dir / "sections.bak.json")
     (song_dir / "drums-gate.mp3").unlink(missing_ok=True)
     db.update(song_id, status="queued", message="Na fila para reprocessar", error=None, stage=None, progress=0.0)
     return db.get(song_id)
@@ -513,7 +516,9 @@ def _download_name(song_id: str, suffix: str, ext: str) -> str:
 
 @app.get("/api/songs/{song_id}/score.musicxml")
 def score(song_id: str, download: bool = False) -> FileResponse:
-    f = _ready(song_id) / "score.musicxml"
+    song_dir = _ready(song_id)
+    _ensure_sections(song_dir)
+    f = song_dir / "score.musicxml"
     if download:
         return FileResponse(f, media_type="application/vnd.recordare.musicxml+xml",
                             filename=_download_name(song_id, "partitura", "musicxml"))
@@ -562,6 +567,72 @@ def timing(song_id: str) -> dict:
     beats = json.loads((song_dir / "beats.json").read_text())["beats"]
     bars = json.loads((song_dir / "bars.json").read_text())
     return {"beats": beats, "bars": bars}
+
+
+# ---------- partes da música (Intro, Verso, Refrão...) ----------
+MAX_PART_LABEL = 40
+
+
+def _ensure_sections(song_dir: Path) -> None:
+    """Músicas processadas antes das partes: calcula na primeira visita. Falha aqui não pode
+    impedir a partitura de abrir."""
+    try:
+        sectionslib.ensure(song_dir)
+    except Exception as e:  # noqa: BLE001 - partes são um extra
+        print(f"[{song_dir.name}] partes falharam: {e}", flush=True)
+
+
+def _sections_state(song_dir: Path) -> dict:
+    data = sectionslib.load(song_dir)
+    return {"sections": sectionslib.current(song_dir), "auto": data.get("auto") or [],
+            "edited": bool(data.get("manual"))}
+
+
+@app.get("/api/songs/{song_id}/sections")
+def get_sections(song_id: str) -> dict:
+    song_dir = _ready(song_id)
+    _ensure_sections(song_dir)
+    return _sections_state(song_dir)
+
+
+class PartItem(BaseModel):
+    bar: int
+    label: str
+
+
+class PartsBody(BaseModel):
+    sections: list[PartItem]
+
+
+@app.put("/api/songs/{song_id}/sections")
+def put_sections(song_id: str, body: PartsBody) -> dict:
+    """O dono corrige as partes (nome e compasso de início); a partitura é regravada com elas."""
+    song_dir = _ready(song_id, write=True)
+    total = len(json.loads((song_dir / "bars.json").read_text()))
+    items: dict = {}
+    for p in body.sections:
+        label = _clean(p.label)
+        if not label:
+            raise HTTPException(400, "toda parte precisa de um nome")
+        if len(label) > MAX_PART_LABEL:
+            raise HTTPException(400, f"nome de parte longo demais (máximo de {MAX_PART_LABEL} caracteres)")
+        if not 1 <= p.bar <= total:
+            raise HTTPException(400, f"compasso {p.bar} fora da música (1 a {total})")
+        items[p.bar] = label                      # mesmo compasso duas vezes: vale o último
+    sectionslib.save_manual(song_dir, [{"bar": b, "label": items[b]} for b in sorted(items)] or None)
+    _, _, _, edited = _load(song_dir)
+    _rebuild_score(song_dir, edited)
+    return _sections_state(song_dir)
+
+
+@app.delete("/api/songs/{song_id}/sections/manual")
+def reset_sections(song_id: str) -> dict:
+    """Descarta as correções e volta às partes automáticas."""
+    song_dir = _ready(song_id, write=True)
+    sectionslib.save_manual(song_dir, None)
+    _, _, _, edited = _load(song_dir)
+    _rebuild_score(song_dir, edited)
+    return _sections_state(song_dir)
 
 
 # ---------- partitura em PDF ----------
@@ -743,7 +814,8 @@ def _load(song_dir: Path):
 def _rebuild_score(song_dir: Path, edited: list) -> None:
     stats = json.loads((song_dir / "stats.json").read_text())
     title = json.loads((song_dir / "meta.json").read_text()).get("title") or song_dir.name
-    to_musicxml(edited, stats["bpb"], stats["bpm_median"], song_dir / "score.musicxml", title=title)
+    to_musicxml(edited, stats["bpb"], stats["bpm_median"], song_dir / "score.musicxml", title=title,
+                sections=sectionslib.labels_by_bar(song_dir))
 
 
 def _cluster_json(c) -> dict:

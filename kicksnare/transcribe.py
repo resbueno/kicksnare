@@ -595,8 +595,10 @@ def ascii_grid(measures: list[Measure], start: int = 0, count: int = 4) -> str:
     return "\n".join(lines)
 
 
-def to_musicxml(measures: list[Measure], bpb: int, bpm: float, out: Path, title: str = "Kicksnare") -> Path:
-    from music21 import clef, duration, instrument, metadata, meter, note, percussion, stream, tempo
+def to_musicxml(measures: list[Measure], bpb: int, bpm: float, out: Path, title: str = "Kicksnare",
+                sections: dict | None = None) -> Path:
+    """`sections`: {índice do compasso: nome da parte}, marcado como sinal de ensaio no compasso."""
+    from music21 import clef, duration, expressions, instrument, metadata, meter, note, percussion, stream, tempo
 
     def make_note(pitch: int, ql: float):
         _, (step, octave), x = PIECES[pitch]
@@ -631,6 +633,8 @@ def to_musicxml(measures: list[Measure], bpb: int, bpm: float, out: Path, title:
         if m.beats != current_beats:  # compasso irregular/anacruse muda a fórmula
             meas.insert(0, meter.TimeSignature(f"{m.beats}/4"))
             current_beats = m.beats
+        if sections and idx in sections:
+            meas.insert(0, expressions.RehearsalMark(sections[idx]))
         sd = m.subdiv
         for beat in range(m.beats):
             base = beat * sd

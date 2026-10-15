@@ -45,6 +45,21 @@
   #fs .fs-foot .grp { display: flex; align-items: center; gap: 6px; }
   #fs .fs-foot .grp .lbl { font-size: .75rem; color: var(--muted); }
   body.fs-on { overflow: hidden; }
+  #fs .fs-next { flex: 1 0 100%; font-size: 1.15rem; min-height: 1.5em; }
+  #fs .fs-next b { color: var(--accent); }
+  #fs .fs-next.soon { font-weight: 600; }
+  #fs .fs-next.soon b { background: var(--accent); color: var(--accent-ink); padding: 0 8px; border-radius: 6px; }
+  /* partes da música */
+  .parts { margin-top: 18px; }
+  .partsbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .partslist { display: flex; flex-wrap: wrap; gap: 6px; }
+  .partslist button { padding: 3px 10px; font-size: .85rem; border-radius: 999px; }
+  .partslist button .n { color: var(--muted); font-size: .75rem; margin-right: 4px; }
+  .partslist button.cur { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .partslist button.cur .n { color: inherit; opacity: .8; }
+  .partrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .partrow input[type=number] { width: 5.5em; }
+  .partrow input[type=text] { flex: 1 1 180px; min-width: 0; }
 </style>
 </head>
 <body class="wide">
@@ -157,6 +172,30 @@
     </div>
     <div id="now" class="status-line"></div>
 
+    <div id="partsBox" class="parts" hidden>
+      <div class="partsbar">
+        <span class="lbl" title="Detectadas automaticamente pela harmonia, pelo volume e pelo groove. Clique para ir até a parte.">Partes</span>
+        <span id="partsList" class="partslist"></span>
+        <button id="partsEditBtn" type="button" class="sm ghost" hidden>✎ Editar partes</button>
+      </div>
+      <div id="partsEditor" hidden>
+        <p class="muted small" style="margin:8px 0">Cada parte começa no compasso indicado e vai até a próxima.</p>
+        <div id="partsRows" class="stack"></div>
+        <datalist id="partNames">
+          <option value="Intro"><option value="Verso 1"><option value="Verso 2"><option value="Verso 3">
+          <option value="Pré-refrão"><option value="Refrão"><option value="Ponte"><option value="Solo">
+          <option value="Interlúdio"><option value="Final">
+        </datalist>
+        <div class="row" style="margin-top:10px">
+          <button id="partsAdd" type="button" class="sm">+ Parte no compasso atual</button>
+          <button id="partsSave" type="button" class="sm primary">Salvar</button>
+          <button id="partsCancel" type="button" class="sm ghost">Cancelar</button>
+          <button id="partsReset" type="button" class="sm ghost" hidden title="Descarta as correções">Voltar às automáticas</button>
+          <span id="partsMsg" class="small" style="color:var(--err)"></span>
+        </div>
+      </div>
+    </div>
+
     <div class="scorebar">
       <h2>Partitura</h2>
       <div class="pager">
@@ -204,6 +243,7 @@
   </div>
   <div id="fsBody"></div>
   <div class="fs-foot">
+    <div id="fsNext" class="fs-next" aria-live="polite"></div>
     <span id="fsAudio" style="display:contents"></span>
     <span class="grp"><span class="lbl">Faixa</span><span id="fsTrack"></span></span>
     <span class="grp"><span class="lbl">Metrônomo</span><span id="fsMetro"></span></span>
@@ -257,6 +297,8 @@ async function boot() {
   $("#ready").hidden = false;
   await drawScore(true);
   await initSync();
+  canEdit = !!song.can_edit;
+  await loadParts();
   $("#patSec").hidden = !song.can_edit;            // padrões alteram a partitura: só dono/admin
   if (song.can_edit) await loadPatterns();
 }
@@ -266,6 +308,7 @@ async function drawScore(reload) {
   if (!osmd) {
     osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(holder, { autoResize: true, drawTitle: false, drawSubtitle: false, drawComposer: false, drawPartNames: false,
       cursorsOptions: [{ type: 0, color: "#c2410c", alpha: 0.5, follow: false }] });
+    osmd.EngravingRules.RehearsalMarkFontSize = 14;   // partes (Intro, Verso, Refrão...) legíveis
   }
   if (reload) {
     const xml = await (await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/score.musicxml?t=${Date.now()}`)).text();
@@ -394,7 +437,7 @@ function syncCursor(force) {
   const q = timeToQ(curTime());
   const idx = stepIndexAt(q);
   const bar = steps[idx].m + 1;
-  $("#now").textContent = $("#fsNow").textContent = `compasso ${bar}`;
+  showPart(bar);
   if (idx === curIdx && !force) return;
 
   const last = Math.min(first + PAGE - 1, totalBars);
@@ -548,6 +591,100 @@ document.addEventListener("keydown", (e) => {
   audio.paused ? audio.play() : audio.pause();
 });
 $("#follow").onchange = () => syncCursor(true);
+
+// ---------- partes da música (Intro, Verso, Refrão...) ----------
+let parts = [], partsEdited = false, canEdit = false, shownBar = 0;
+const partAt = (bar) => { let p = null; for (const x of parts) { if (x.bar <= bar) p = x; else break; } return p; };
+const partAfter = (bar) => parts.find((x) => x.bar > bar) || null;
+
+async function loadParts() {
+  try {
+    const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/sections`);
+    if (!r.ok) return;
+    const d = await r.json();
+    parts = d.sections || []; partsEdited = !!d.edited;
+  } catch { return; }
+  renderParts();
+}
+
+function renderParts() {
+  $("#partsBox").hidden = !parts.length && !canEdit;
+  $("#partsEditBtn").hidden = !canEdit;
+  const cur = partAt(shownBar || 1);
+  $("#partsList").replaceChildren(...parts.map((p) => {
+    const b = document.createElement("button"); b.type = "button";
+    if (cur && p.bar === cur.bar) b.className = "cur";
+    const n = document.createElement("span"); n.className = "n"; n.textContent = p.bar;
+    b.append(n, p.label);
+    b.title = `Ir para o compasso ${p.bar}`;
+    b.onclick = () => { if (timing) { audio.currentTime = barStartTime(p.bar) + offsetSec(); syncCursor(true); } };
+    return b;
+  }));
+  showPart(shownBar || 1, true);
+}
+
+// linha de status ("compasso 23 · Verso 1") e, na tela cheia, o aviso da próxima parte
+function showPart(bar, force) {
+  if (bar === shownBar && !force) return;
+  const moved = partAt(bar) !== partAt(shownBar);
+  shownBar = bar;
+  const cur = partAt(bar), next = partAfter(bar);
+  $("#now").textContent = $("#fsNow").textContent = `compasso ${bar}` + (cur ? ` · ${cur.label}` : "");
+  const box = $("#fsNext");
+  box.replaceChildren();
+  box.classList.remove("soon");
+  if (next) {
+    const left = next.bar - bar;
+    const b = document.createElement("b"); b.textContent = next.label;
+    box.append("Próxima parte: ", b, ` · em ${left} compasso${left > 1 ? "s" : ""} (compasso ${next.bar})`);
+    if (left <= 2) box.classList.add("soon");
+  } else if (cur) {
+    box.append(`Última parte: ${cur.label}`);
+  }
+  if (moved && !force) renderParts();            // destaca a parte atual na lista
+}
+
+function partRow(p) {
+  const row = document.createElement("div"); row.className = "partrow";
+  const bar = document.createElement("input"); bar.type = "number"; bar.min = 1; bar.max = totalBars; bar.value = p.bar;
+  bar.setAttribute("aria-label", "Compasso de início");
+  const label = document.createElement("input"); label.type = "text"; label.maxLength = 40; label.value = p.label;
+  label.setAttribute("list", "partNames"); label.setAttribute("aria-label", "Nome da parte");
+  const del = document.createElement("button"); del.type = "button"; del.className = "sm ghost"; del.textContent = "✕";
+  del.title = "Remover esta parte"; del.onclick = () => row.remove();
+  const pre = document.createElement("span"); pre.className = "muted small"; pre.textContent = "compasso";
+  row.append(pre, bar, label, del);
+  return row;
+}
+$("#partsEditBtn").onclick = () => {
+  $("#partsRows").replaceChildren(...parts.map(partRow));
+  $("#partsReset").hidden = !partsEdited; $("#partsMsg").textContent = "";
+  $("#partsEditor").hidden = false; $("#partsEditBtn").hidden = true;
+};
+$("#partsCancel").onclick = () => { $("#partsEditor").hidden = true; $("#partsEditBtn").hidden = !canEdit; };
+$("#partsAdd").onclick = () => {
+  const row = partRow({ bar: steps && timing ? currentBar() : 1, label: "" });
+  $("#partsRows").append(row); row.querySelector("input[type=text]").focus();
+};
+async function saveParts(method, body) {
+  $("#partsMsg").textContent = "";
+  const url = `${BASE}/api/songs/${encodeURIComponent(id)}/sections` + (method === "DELETE" ? "/manual" : "");
+  const r = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  if (!r.ok) { let d = r.statusText; try { d = (await r.json()).detail || d; } catch {} $("#partsMsg").textContent = d; return; }
+  const d = await r.json();
+  parts = d.sections || []; partsEdited = !!d.edited;
+  $("#partsEditor").hidden = true;
+  renderParts();
+  await drawScore(true);                         // a partitura foi regravada com as novas marcações
+}
+$("#partsSave").onclick = () => {
+  const items = [...$("#partsRows").children].map((row) => ({
+    bar: parseInt(row.querySelector("input[type=number]").value), label: row.querySelector("input[type=text]").value.trim(),
+  }));
+  if (items.some((p) => !p.label || !(p.bar >= 1))) { $("#partsMsg").textContent = "Preencha o compasso e o nome de cada parte."; return; }
+  saveParts("PUT", { sections: items });
+};
+$("#partsReset").onclick = () => saveParts("DELETE");
 
 // ---------- metrônomo ----------
 // Cliques agendados no Web Audio a partir da grade de tempos detectada (timing.beats), então
@@ -777,6 +914,7 @@ async function exportPdf() {
     const er = o.EngravingRules;
     er.MinimumDistanceBetweenSystems = 16;
     er.MinSkyBottomDistBetweenSystems = 12;
+    er.RehearsalMarkFontSize = 12;                             // partes (Intro, Verso, Refrão...)
     o.render();
     const svgs = [...holder.querySelectorAll("svg")];
     if (!svgs.length) throw new Error("a partitura não gerou páginas");
