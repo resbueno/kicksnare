@@ -946,6 +946,12 @@ async function exportPdf() {
     colorParts(holder, partLabels(xml));
     const svgs = [...holder.querySelectorAll("svg")];
     if (!svgs.length) throw new Error("a partitura não gerou páginas");
+    // o svg2pdf não entende tamanho de fonte em "pt" e esses textos somem do PDF (números da tablatura,
+    // nomes das partes, andamento): converte para px (1 pt = 4/3 px)
+    for (const t of holder.querySelectorAll("svg text")) {
+      const m = /^([\d.]+)pt$/.exec(t.getAttribute("font-size") || "");
+      if (m) t.setAttribute("font-size", (parseFloat(m[1]) * 4 / 3).toFixed(2) + "px");
+    }
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF({ unit: "pt", format: "a4", orientation: "portrait", compress: true });
     const W = pdf.internal.pageSize.getWidth(), H = pdf.internal.pageSize.getHeight();
