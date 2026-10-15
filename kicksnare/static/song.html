@@ -303,15 +303,42 @@ async function boot() {
   if (song.can_edit) await loadPatterns();
 }
 
+// Partes (sinais de ensaio do MusicXML): acima das notas e em vermelho. O OSMD não tem opção de
+// cor para eles, então o texto e a moldura são pintados no SVG depois de cada desenho.
+const PART_COLOR = "#d32f2f";
+let markLabels = new Set();
+const partLabels = (xml) => new Set([...xml.matchAll(/<rehearsal[^>]*>([^<]+)<\/rehearsal>/g)]
+  .map((m) => new DOMParser().parseFromString(m[1], "text/html").documentElement.textContent.trim()));
+function styleParts(o, size = 14) {
+  o.EngravingRules.RehearsalMarkFontSize = size;
+  o.EngravingRules.RehearsalMarkYOffset = 28;      // positivo sobe: livra pratos e chimbal acima da pauta
+}
+function colorParts(root, labels = markLabels) {
+  if (!labels.size) return;
+  for (const t of root.querySelectorAll("svg text")) {
+    if (!labels.has(t.textContent.trim())) continue;
+    t.setAttribute("fill", PART_COLOR);
+    // a moldura é desenhada logo antes do texto (rect, ou path conforme o contexto SVG)
+    let box = t.previousElementSibling;
+    for (let k = 0; box && k < 2; k++, box = box.previousElementSibling) {
+      if (/^(rect|path)$/i.test(box.tagName)) { box.setAttribute("stroke", PART_COLOR); break; }
+    }
+  }
+}
+
 async function drawScore(reload) {
   const holder = $("#osmd");
   if (!osmd) {
     osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(holder, { autoResize: true, drawTitle: false, drawSubtitle: false, drawComposer: false, drawPartNames: false,
       cursorsOptions: [{ type: 0, color: "#c2410c", alpha: 0.5, follow: false }] });
-    osmd.EngravingRules.RehearsalMarkFontSize = 14;   // partes (Intro, Verso, Refrão...) legíveis
+    styleParts(osmd);
+    // o autoResize redesenha por conta própria: a cor das partes vai junto em todo render
+    const render = osmd.render.bind(osmd);
+    osmd.render = () => { render(); colorParts(holder); };
   }
   if (reload) {
     const xml = await (await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/score.musicxml?t=${Date.now()}`)).text();
+    markLabels = partLabels(xml);
     await osmd.load(xml);
   }
   const last = Math.min(first + PAGE - 1, totalBars);
@@ -914,8 +941,9 @@ async function exportPdf() {
     const er = o.EngravingRules;
     er.MinimumDistanceBetweenSystems = 16;
     er.MinSkyBottomDistBetweenSystems = 12;
-    er.RehearsalMarkFontSize = 12;                             // partes (Intro, Verso, Refrão...)
+    styleParts(o, 12);                                          // partes (Intro, Verso, Refrão...)
     o.render();
+    colorParts(holder, partLabels(xml));
     const svgs = [...holder.querySelectorAll("svg")];
     if (!svgs.length) throw new Error("a partitura não gerou páginas");
     const { jsPDF } = window.jspdf;
