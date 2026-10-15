@@ -31,6 +31,18 @@
   .grid td.rare { outline: 1px dashed var(--warn); outline-offset: -3px; }
   .legend { font-size: .85rem; color: var(--muted); }
   .grid-wrap { overflow-x: auto; }
+  /* modo tela cheia: partitura ocupa a tela, trilha e controles no rodapé */
+  #fs { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--bg); }
+  #fs .fs-top { display: flex; align-items: center; gap: 12px 20px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  #fs .fs-top h2 { margin: 0; font-size: 1.05rem; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #fsBody { flex: 1 1 auto; overflow: auto; padding: 12px 16px; }
+  #fsBody #score { min-height: 100%; }
+  #fs .fs-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; padding: 10px 16px;
+    border-top: 1px solid var(--line); background: var(--panel); }
+  #fs .fs-foot audio { flex: 1 1 320px; min-width: 0; height: 40px; margin: 0 !important; }
+  #fs .fs-foot .grp { display: flex; align-items: center; gap: 6px; }
+  #fs .fs-foot .grp .lbl { font-size: .75rem; color: var(--muted); }
+  body.fs-on { overflow: hidden; }
 </style>
 </head>
 <body class="wide">
@@ -150,6 +162,7 @@
         <span id="range" class="muted small"></span>
         <button id="next" class="sm" aria-label="Próxima página">→</button>
       </div>
+      <button id="fsBtn" class="sm" title="Partitura em tela cheia, com a trilha no rodapé (atalho: F)">⛶ Tela cheia</button>
       <div class="row" id="downloads">
         <span class="muted small" style="margin-right:4px">Baixar</span>
         <a class="btn sm" id="dlAudio" href="#" download>Áudio</a>
@@ -180,6 +193,22 @@
   </div>
 </main>
 
+<div id="fs" hidden role="dialog" aria-label="Partitura em tela cheia">
+  <div class="fs-top">
+    <h2 id="fsTitle"></h2>
+    <span id="fsPager"></span>
+    <span id="fsNow" class="muted small"></span>
+    <button id="fsExit" class="sm" title="Sair da tela cheia (Esc)">✕ Sair</button>
+  </div>
+  <div id="fsBody"></div>
+  <div class="fs-foot">
+    <span id="fsAudio" style="display:contents"></span>
+    <span class="grp"><span class="lbl">Faixa</span><span id="fsTrack"></span></span>
+    <span class="grp"><span class="lbl">Metrônomo</span><span id="fsMetro"></span></span>
+    <span class="grp"><span class="lbl">Velocidade</span><span id="fsSpeed"></span></span>
+  </div>
+</div>
+
 <script src="__BASE__/static/auth.js" data-base="__BASE__"></script>
 <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.9.0/build/opensheetmusicdisplay.min.js"></script>
 <script>
@@ -189,7 +218,7 @@ const $ = (s) => document.querySelector(s);
 const NAMES = { cymbal: "pratos", hihat: "chimbal", tom_hi: "tom agudo", tom: "tom médio", snare: "caixa", floor: "surdo", kick: "bumbo" };
 const PAGE = 16;
 let osmd = null, first = 1, totalBars = 0;
-let steps = null, timing = null, curIdx = -1, manualPage = false;
+let steps = null, timing = null, curIdx = -1, manualPage = false, fsOn = false;
 
 async function boot() {
   const song = await (await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}`)).json();
@@ -363,7 +392,7 @@ function syncCursor(force) {
   const q = timeToQ(curTime());
   const idx = stepIndexAt(q);
   const bar = steps[idx].m + 1;
-  $("#now").textContent = `compasso ${bar}`;
+  $("#now").textContent = $("#fsNow").textContent = `compasso ${bar}`;
   if (idx === curIdx && !force) return;
 
   const last = Math.min(first + PAGE - 1, totalBars);
@@ -397,7 +426,15 @@ function scrollToCursor() {
   if (!$("#follow").checked || Date.now() - lastUserScroll < 4000) return;
   const el = document.querySelector('#score img[id^="cursor"]');
   if (!el) return;
-  const r = el.getBoundingClientRect(), margin = 140;
+  const r = el.getBoundingClientRect();
+  if (fsOn) {                                     // tela cheia: rola a área da partitura, não a janela
+    const box = $("#fsBody"), b = box.getBoundingClientRect(), margin = Math.min(100, b.height * 0.2);
+    if (r.top < b.top + margin || r.bottom > b.bottom - margin) {
+      box.scrollTo({ top: box.scrollTop + r.top - b.top - b.height * 0.3, behavior: "smooth" });
+    }
+    return;
+  }
+  const margin = 140;
   if (r.top < margin || r.bottom > window.innerHeight - margin) {
     window.scrollTo({ top: window.scrollY + r.top - window.innerHeight * 0.35, behavior: "smooth" });
   }
@@ -772,6 +809,48 @@ async function exportPdf() {
   }
 }
 $("#dlPdf").onclick = exportPdf;
+
+// ---------- tela cheia ----------
+// Leva para a camada #fs os próprios elementos da página (partitura, player, faixa, metrônomo,
+// velocidade e paginação) e os devolve ao sair: a sincronia, a contagem e o metrônomo seguem
+// funcionando sem duplicar nada. O player muda de lugar na mesma tarefa, então não pausa.
+const FS_MOVES = [["#score", "#fsBody"], [".pager", "#fsPager"], ["#player", "#fsAudio"],
+                  ["#trackSeg", "#fsTrack"], ["#metroSeg", "#fsMetro"], ["#speed", "#fsSpeed"]];
+const fsHomes = [];
+function enterFs() {
+  if (fsOn || $("#ready").hidden) return;
+  fsOn = true;
+  $("#fsTitle").textContent = $("#title").textContent;
+  for (const [sel, dest] of FS_MOVES) {
+    const el = $(sel), mark = document.createComment("fs");
+    el.before(mark); fsHomes.push([el, mark]); $(dest).append(el);
+  }
+  $("#fs").hidden = false; document.body.classList.add("fs-on");
+  // tela cheia de verdade onde o navegador deixa; no iPhone fica a camada fixa ocupando a janela
+  const req = $("#fs").requestFullscreen || $("#fs").webkitRequestFullscreen;
+  if (req) Promise.resolve(req.call($("#fs"))).catch(() => {});
+  setTimeout(() => drawScore(false), 50);         // largura nova: redesenha e reposiciona o cursor
+}
+function exitFs() {
+  if (!fsOn) return;
+  fsOn = false;
+  for (const [el, mark] of fsHomes.splice(0)) { mark.replaceWith(el); }
+  $("#fs").hidden = true; document.body.classList.remove("fs-on");
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document).catch?.(() => {});
+  }
+  setTimeout(() => { drawScore(false); scrollToCursor(); }, 50);
+}
+$("#fsBtn").onclick = enterFs;
+$("#fsExit").onclick = exitFs;
+for (const ev of ["fullscreenchange", "webkitfullscreenchange"]) {
+  document.addEventListener(ev, () => { if (!document.fullscreenElement && !document.webkitFullscreenElement) exitFs(); });
+}
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  if (e.code === "KeyF") { e.preventDefault(); fsOn ? exitFs() : enterFs(); }
+  else if (e.code === "Escape" && fsOn) exitFs();   // camada sem tela cheia nativa (iPhone)
+});
 
 boot();
 </script>
