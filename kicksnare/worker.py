@@ -8,9 +8,9 @@ import sys
 import time
 import traceback
 
-from . import db
+from . import db, identify
 from .ingest import DATA_DIR, ingest
-from .separate import encode_mp3, ensure_no_drums, separate_drums
+from .separate import encode_mp3, ensure_no_drums, needs_separation, separate_drums
 
 
 def _set(song_id: str, stage: str, message: str) -> None:
@@ -34,6 +34,33 @@ def _duration(path) -> float | None:
         return None
 
 
+def _identify(sid: str, meta) -> None:
+    """Preenche banda e nome da música (Groq), uma vez por música. Só troca o nome se ainda for o
+    título original do vídeo/arquivo, e a banda se estiver vazia: o que o usuário editou prevalece.
+    Falha aqui não interrompe o processamento."""
+    try:
+        info = json.loads(meta.read_text()) if meta.exists() else {}
+        row = db.get(sid) or {}
+        if info.get("identified") or not identify.enabled() or row.get("artist"):
+            return
+        raw = info.get("source_title") or info.get("title") or row.get("title")
+        if not raw:
+            return
+        found = identify.identify(raw, info.get("uploader"), info.get("artist"), info.get("track"))
+        fields = {}
+        if found["title"] and row.get("title") in (None, raw, info.get("title")):
+            fields["title"] = info["title"] = found["title"]
+        if found["artist"]:
+            fields["artist"] = found["artist"]
+        if fields:
+            db.update(sid, **fields)
+        info["identified"] = True
+        meta.write_text(json.dumps(info))
+        print(f"[{sid}] identificado: {raw!r} -> {found}", flush=True)
+    except Exception as e:  # noqa: BLE001 - identificação é só conveniência
+        print(f"[{sid}] identificação falhou: {e}", flush=True)
+
+
 def process(song: dict) -> None:
     sid, source = song["id"], song["source"]
 
@@ -43,9 +70,9 @@ def process(song: dict) -> None:
     if meta.exists() and not (db.get(sid) or {}).get("title"):   # nome editado pelo usuário prevalece
         db.update(sid, title=json.loads(meta.read_text()).get("title"))
     db.update(sid, duration=_duration(audio))
+    _identify(sid, meta)
 
-    drums = audio.parent / "drums.wav"
-    if not drums.exists():
+    if needs_separation(audio.parent):   # também quando o modelo do Demucs mudou
         _set(sid, "separate", "Isolando a bateria (alguns minutos)")
         _, metrics = separate_drums(audio, on_progress=lambda p: db.update(sid, progress=round(p, 3)))
         print(f"[{sid}] demucs {metrics}", flush=True)

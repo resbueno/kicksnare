@@ -7,11 +7,19 @@
 <link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
 <link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
 <meta name="theme-color" content="#16181d">
-<link rel="stylesheet" href="__BASE__/static/base.css?v=3">
+<link rel="stylesheet" href="__BASE__/static/base.css?v=4">
 <style>
   [hidden] { display: none !important; }
-  #score { background: #fff; border-radius: 12px; padding: 16px; overflow-x: auto; border: 1px solid var(--line); }
-  .pager { display: flex; gap: 12px; align-items: center; margin: 0 0 12px; }
+  #score { background: #fff; border-radius: 12px; padding: 8px 4px; overflow-x: auto; border: 1px solid var(--line); }
+  .pager { display: flex; gap: 12px; align-items: center; }
+  /* controles em duas linhas: reprodução / navegação */
+  .controls { display: flex; flex-direction: column; gap: 18px; }
+  .ctlrow { display: flex; flex-wrap: wrap; gap: 16px 32px; align-items: flex-start; }
+  .ctlrow .field.grow { flex: 1 1 auto; }
+  .scorebar { display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center; justify-content: space-between;
+    margin: 48px 0 12px; }
+  .scorebar h2 { margin: 0; }
+  .scorebar .row { gap: 8px; }
   .pgroup { margin-top: 28px; }
   .pgroup h3 { font-size: .95rem; margin: 0 0 10px; }
   .grid { border-collapse: collapse; font-size: .8rem; }
@@ -25,7 +33,7 @@
   .grid-wrap { overflow-x: auto; }
 </style>
 </head>
-<body>
+<body class="wide">
 <header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare — início"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
 <main>
   <a class="back" href="__BASE__/">← Músicas</a>
@@ -46,103 +54,109 @@
   <div id="ready" hidden>
     <audio id="player" controls preload="metadata" style="width:100%;margin-top:28px"></audio>
     <div class="controls">
-      <div class="field">
-        <span class="lbl">Faixa</span>
-        <div class="ctl">
-          <input type="hidden" id="track" value="mix">
-          <span class="seg" id="trackSeg" role="group" aria-label="Faixa">
-            <button type="button" data-track="mix" title="Música original" aria-label="Música original">🎵</button>
-            <button type="button" data-track="drums" title="Só a bateria" aria-label="Só a bateria">🥁</button>
-            <button type="button" data-track="no_drums" title="Sem a bateria" aria-label="Sem a bateria"><span class="nodrum">🥁</span></button>
-          </span>
+      <div class="ctlrow">
+        <div class="field">
+          <span class="lbl">Faixa</span>
+          <div class="ctl">
+            <input type="hidden" id="track" value="mix">
+            <span class="seg" id="trackSeg" role="group" aria-label="Faixa">
+              <button type="button" data-track="mix" title="Música original" aria-label="Música original">🎵</button>
+              <button type="button" data-track="drums" title="Só a bateria" aria-label="Só a bateria">🥁</button>
+              <button type="button" data-track="no_drums" title="Sem a bateria" aria-label="Sem a bateria"><span class="nodrum">🥁</span></button>
+            </span>
+          </div>
+        </div>
+        <div class="field">
+          <label class="lbl" for="speed">Velocidade</label>
+          <div class="ctl">
+            <select id="speed">
+              <option value="0.5">50%</option><option value="0.65">65%</option>
+              <option value="0.8">80%</option><option value="0.9">90%</option>
+              <option value="1" selected>100%</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label class="lbl" for="countdown" title="Compassos de metrônomo antes de a música começar">Contagem</label>
+          <div class="ctl">
+            <select id="countdown">
+              <option value="0">Sem</option><option value="1">1 compasso</option>
+              <option value="2">2 compassos</option><option value="4">4 compassos</option>
+            </select>
+          </div>
+        </div>
+        <div class="field grow">
+          <span class="lbl" title="Atalho: tecla M liga/desliga">Metrônomo</span>
+          <div class="ctl">
+            <span class="seg" id="metroSeg" role="group" aria-label="Metrônomo">
+              <button type="button" data-m="off" title="Desligado" aria-label="Metrônomo desligado" style="font-size:.85rem">off</button>
+              <button type="button" data-m="4" title="Em semínimas (só os tempos)" aria-label="Metrônomo em semínimas">♩</button>
+              <button type="button" data-m="8" title="Em colcheias" aria-label="Metrônomo em colcheias">♪</button>
+              <button type="button" data-m="16" title="Em semicolcheias" aria-label="Metrônomo em semicolcheias">♬</button>
+            </span>
+            <span class="seg" id="metroGrid" role="group" aria-label="Andamento do metrônomo">
+              <button type="button" data-g="song" title="Segue os tempos detectados na gravação" style="font-size:.8rem">música</button>
+              <button type="button" data-g="fixed" title="Andamento constante no BPM escolhido" style="font-size:.8rem">fixo</button>
+            </span>
+            <span id="bpmBox" class="ctl" style="gap:4px" hidden>
+              <button type="button" id="bpmDown" class="sm ghost" aria-label="Diminuir BPM">−</button>
+              <input type="number" id="metroBpm" min="30" max="300" step="1" style="width:4.5em" aria-label="BPM do metrônomo">
+              <button type="button" id="bpmUp" class="sm ghost" aria-label="Aumentar BPM">+</button>
+              <span class="muted small">BPM</span>
+            </span>
+            <label class="muted small" title="Volume do metrônomo (acima de 100% passa por um limitador)">vol
+              <input type="range" id="metroVol" min="0" max="4" step="0.1" value="1" style="width:84px;accent-color:var(--accent);vertical-align:middle"
+                aria-label="Volume do metrônomo"></label>
+            <span id="metroVolTxt" class="muted small" style="min-width:3.2em">100%</span>
+            <label class="muted small" title="Posição do clique entre esquerda e direita (duplo clique centraliza)">E
+              <input type="range" id="metroPan" min="-1" max="1" step="0.1" value="0" style="width:72px;accent-color:var(--accent);vertical-align:middle"
+                aria-label="Pan do metrônomo"> D</label>
+          </div>
         </div>
       </div>
-      <div class="field">
-        <label class="lbl" for="speed">Velocidade</label>
-        <div class="ctl">
-          <select id="speed">
-            <option value="0.5">50%</option><option value="0.65">65%</option>
-            <option value="0.8">80%</option><option value="0.9">90%</option>
-            <option value="1" selected>100%</option>
-          </select>
+      <div class="ctlrow">
+        <div class="field">
+          <label class="lbl" for="goto">Ir para compasso</label>
+          <div class="ctl"><input type="number" id="goto" min="1" value="1" style="width:5em">
+            <button id="gotoBtn" class="sm">Ir</button></div>
         </div>
-      </div>
-      <div class="field">
-        <label class="lbl" for="countdown" title="Compassos de metrônomo antes de a música começar">Contagem</label>
-        <div class="ctl">
-          <select id="countdown">
-            <option value="0">Sem</option><option value="1">1 compasso</option>
-            <option value="2">2 compassos</option><option value="4">4 compassos</option>
-          </select>
+        <div class="field">
+          <span class="lbl">Acompanhar</span>
+          <div class="ctl"><label><input type="checkbox" id="follow" checked>seguir o cursor</label></div>
         </div>
-      </div>
-      <div class="field" style="grid-column:1/-1">
-        <span class="lbl" title="Atalho: tecla M liga/desliga">Metrônomo</span>
-        <div class="ctl">
-          <span class="seg" id="metroSeg" role="group" aria-label="Metrônomo">
-            <button type="button" data-m="off" title="Desligado" aria-label="Metrônomo desligado" style="font-size:.85rem">off</button>
-            <button type="button" data-m="4" title="Em semínimas (só os tempos)" aria-label="Metrônomo em semínimas">♩</button>
-            <button type="button" data-m="8" title="Em colcheias" aria-label="Metrônomo em colcheias">♪</button>
-            <button type="button" data-m="16" title="Em semicolcheias" aria-label="Metrônomo em semicolcheias">♬</button>
-          </span>
-          <span class="seg" id="metroGrid" role="group" aria-label="Andamento do metrônomo">
-            <button type="button" data-g="song" title="Segue os tempos detectados na gravação" style="font-size:.8rem">música</button>
-            <button type="button" data-g="fixed" title="Andamento constante no BPM escolhido" style="font-size:.8rem">fixo</button>
-          </span>
-          <span id="bpmBox" class="ctl" style="gap:4px" hidden>
-            <button type="button" id="bpmDown" class="sm ghost" aria-label="Diminuir BPM">−</button>
-            <input type="number" id="metroBpm" min="30" max="300" step="1" style="width:4.5em" aria-label="BPM do metrônomo">
-            <button type="button" id="bpmUp" class="sm ghost" aria-label="Aumentar BPM">+</button>
-            <span class="muted small">BPM</span>
-          </span>
-          <label class="muted small" title="Volume do metrônomo (acima de 100% passa por um limitador)">vol
-            <input type="range" id="metroVol" min="0" max="4" step="0.1" value="1" style="width:84px;accent-color:var(--accent);vertical-align:middle"
-              aria-label="Volume do metrônomo"></label>
-          <span id="metroVolTxt" class="muted small" style="min-width:3.2em">100%</span>
-          <label class="muted small" title="Posição do clique entre esquerda e direita (duplo clique centraliza)">E
-            <input type="range" id="metroPan" min="-1" max="1" step="0.1" value="0" style="width:72px;accent-color:var(--accent);vertical-align:middle"
-              aria-label="Pan do metrônomo"> D</label>
+        <div class="field">
+          <span class="lbl">Repetir trecho</span>
+          <div class="ctl">
+            <input type="number" id="loopA" min="1" style="width:4.5em" aria-label="Compasso inicial">
+            <button id="markA" class="sm ghost" title="Usa o compasso atual como início">marcar</button>
+            <span class="muted">até</span>
+            <input type="number" id="loopB" min="1" style="width:4.5em" aria-label="Compasso final">
+            <button id="markB" class="sm ghost" title="Usa o compasso atual como fim">marcar</button>
+            <label style="margin-left:4px"><input type="checkbox" id="loopOn">repetir</label>
+          </div>
         </div>
-      </div>
-      <div class="field">
-        <label class="lbl" for="goto">Ir para compasso</label>
-        <div class="ctl"><input type="number" id="goto" min="1" value="1" style="width:5em">
-          <button id="gotoBtn" class="sm">Ir</button></div>
-      </div>
-      <div class="field">
-        <span class="lbl">Acompanhar</span>
-        <div class="ctl"><label><input type="checkbox" id="follow" checked>seguir o cursor</label></div>
-      </div>
-      <div class="field wide">
-        <span class="lbl">Repetir trecho</span>
-        <div class="ctl">
-          <input type="number" id="loopA" min="1" style="width:4.5em" aria-label="Compasso inicial">
-          <button id="markA" class="sm ghost" title="Usa o compasso atual como início">marcar</button>
-          <span class="muted">até</span>
-          <input type="number" id="loopB" min="1" style="width:4.5em" aria-label="Compasso final">
-          <button id="markB" class="sm ghost" title="Usa o compasso atual como fim">marcar</button>
-          <label style="margin-left:4px"><input type="checkbox" id="loopOn">repetir</label>
+        <div class="field">
+          <label class="lbl" for="offset" title="Se o cursor estiver adiantado (+) ou atrasado (−) em relação ao som">Ajuste de sincronia</label>
+          <div class="ctl"><input type="number" id="offset" value="0" step="10" style="width:5.5em"> <span class="muted">ms</span></div>
         </div>
-      </div>
-      <div class="field">
-        <label class="lbl" for="offset" title="Se o cursor estiver adiantado (+) ou atrasado (−) em relação ao som">Ajuste de sincronia</label>
-        <div class="ctl"><input type="number" id="offset" value="0" step="10" style="width:5.5em"> <span class="muted">ms</span></div>
       </div>
     </div>
     <div id="now" class="status-line"></div>
 
-    <h2>Partitura</h2>
-    <div class="row" id="downloads" style="margin-bottom:16px">
-      <span class="muted small" style="margin-right:4px">Baixar</span>
-      <a class="btn sm" id="dlAudio" href="#" download>Áudio</a>
-      <button id="dlPdf" class="sm" title="Gera um PDF com a partitura inteira">PDF</button>
-      <a class="btn sm" id="dlXml" href="#" download>MusicXML</a>
-      <span id="dlMsg" class="muted small"></span>
-    </div>
-    <div class="pager">
-      <button id="prev" class="sm" aria-label="Página anterior">←</button>
-      <span id="range" class="muted small"></span>
-      <button id="next" class="sm" aria-label="Próxima página">→</button>
+    <div class="scorebar">
+      <h2>Partitura</h2>
+      <div class="pager">
+        <button id="prev" class="sm" aria-label="Página anterior">←</button>
+        <span id="range" class="muted small"></span>
+        <button id="next" class="sm" aria-label="Próxima página">→</button>
+      </div>
+      <div class="row" id="downloads">
+        <span class="muted small" style="margin-right:4px">Baixar</span>
+        <a class="btn sm" id="dlAudio" href="#" download>Áudio</a>
+        <button id="dlPdf" class="sm" title="Gera um PDF com a partitura inteira">PDF</button>
+        <a class="btn sm" id="dlXml" href="#" download>MusicXML</a>
+        <span id="dlMsg" class="muted small"></span>
+      </div>
     </div>
     <div id="score"></div>
 

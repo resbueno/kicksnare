@@ -5,6 +5,7 @@ Cada etapa é modelada como `fixo + ritmo * duração do áudio`. Os valores ini
 passa a ser a mediana do que este servidor realmente fez. Na separação (a etapa longa) usa-se o
 progresso impresso pelo Demucs. A espera na fila soma o que falta para os jobs à frente.
 """
+import os
 import statistics
 import time
 
@@ -12,7 +13,8 @@ STAGES = ("ingest", "separate", "transcribe", "finalize")
 # (segundos fixos, segundos por segundo de áudio)
 DEFAULTS = {
     "ingest": (8.0, 0.03),
-    "separate": (6.0, 2.0),
+    # 2,0 medido com htdemucs; o htdemucs_ft levou ~4,4x mais no mesmo trecho
+    "separate": (6.0, 2.0 * (4.4 if os.environ.get("KICKSNARE_DEMUCS_MODEL", "htdemucs_ft") == "htdemucs_ft" else 1.0)),
     "transcribe": (14.0, 0.55),
     "finalize": (3.0, 0.08),
 }

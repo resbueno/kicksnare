@@ -43,7 +43,7 @@ YT_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})")
 
 
 def _page(name: str) -> HTMLResponse:
-    return HTMLResponse((STATIC / name).read_text().replace("__BASE__", BASE))
+    return HTMLResponse((STATIC / name).read_text(encoding="utf-8").replace("__BASE__", BASE))
 
 
 # ---------- sessão / usuário ----------
@@ -451,7 +451,8 @@ def retry(song_id: str) -> dict:
 
 @app.post("/api/songs/{song_id}/reprocess")
 def reprocess(song_id: str) -> dict:
-    """Refaz a transcrição com o algoritmo atual, reaproveitando o áudio e a bateria já separada.
+    """Refaz a transcrição com o algoritmo atual, reaproveitando o áudio. A bateria já separada é
+    reaproveitada, salvo se foi gerada com outro modelo do Demucs (aí a separação é refeita).
 
     As edições de padrão apontam para grupos de compassos que mudam com a nova transcrição: ficam
     guardadas em edits.bak.json. O mp3 da bateria solo depende dos golpes (events.json) e é refeito.

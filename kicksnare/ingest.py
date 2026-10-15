@@ -30,17 +30,19 @@ def _ffmpeg() -> str:
     return path
 
 
-def _video_meta(url: str) -> tuple[str, str]:
-    """(id, título) do vídeo via yt-dlp, sem baixar."""
+def _video_meta(url: str) -> tuple[str, str, dict]:
+    """(id, título, extras) do vídeo via yt-dlp, sem baixar. Extras: canal e, nos vídeos do YouTube
+    Music, artista e faixa (servem para identificar a música; "NA" quando faltam)."""
     result = subprocess.run(
-        [*YTDLP, "--no-playlist", "--print", "%(id)s\n%(title)s", url],
+        [*YTDLP, "--no-playlist", "--print", "%(id)s\n%(title)s\n%(uploader)s\n%(artist)s\n%(track)s", url],
         capture_output=True, text=True, timeout=120,
     )
     if result.returncode != 0:
         err = result.stderr.strip().splitlines()
         raise RuntimeError(err[-1] if err else "yt-dlp falhou ao obter o ID")
     lines = result.stdout.strip().splitlines()
-    return lines[0], (lines[1] if len(lines) > 1 else lines[0])
+    extra = dict(zip(("uploader", "artist", "track"), lines[2:5]))
+    return lines[0], (lines[1] if len(lines) > 1 else lines[0]), extra
 
 
 def file_song_id(path: Path) -> str:
@@ -49,9 +51,9 @@ def file_song_id(path: Path) -> str:
 
 def ingest(source: str, song_id: str | None = None) -> tuple[str, Path]:
     """Retorna (song_id, caminho do audio.wav). Usa cache em data/<song_id>/."""
-    title = None
+    title, extra = None, {}
     if is_url(source):
-        vid, title = _video_meta(source)
+        vid, title, extra = _video_meta(source)
         song_id = song_id or vid
     else:
         src = Path(source).expanduser().resolve()
@@ -65,7 +67,9 @@ def ingest(source: str, song_id: str | None = None) -> tuple[str, Path]:
     song_dir.mkdir(parents=True, exist_ok=True)
     meta = song_dir / "meta.json"
     if not meta.exists():
-        meta.write_text(json.dumps({"title": title, "source": source if is_url(source) else "upload"}))
+        # source_title: título original (o "title" muda quando o usuário renomeia)
+        meta.write_text(json.dumps({"title": title, "source_title": title,
+                                    "source": source if is_url(source) else "upload", **extra}))
     if wav.exists():
         return song_id, wav
 

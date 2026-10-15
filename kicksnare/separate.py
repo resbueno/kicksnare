@@ -1,4 +1,6 @@
 """Isola o stem de bateria com o Demucs (CPU), com parâmetros para pouca RAM."""
+import json
+import os
 import resource
 import shutil
 import subprocess
@@ -14,26 +16,54 @@ def _children_peak_mb() -> float:
     return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
 
 
-def separate_drums(audio: Path, model: str = "htdemucs", segment: int = 7, on_progress=None) -> tuple[Path, dict]:
+# Modelo do Demucs. htdemucs_ft (4 redes, uma por instrumento) vaza menos baixo/guitarra na bateria
+# que o htdemucs (medido num rock, trecho de 60 s: contraste golpe/fundo em 80-1500 Hz de 19,6 para
+# 21,0 dB), mas leva ~4,4x mais (75 s -> 330 s de CPU por minuto de áudio). --shifts 2 dobrou o tempo
+# sem ganho mensurável no mesmo trecho; fica em 1.
+MODEL = os.environ.get("KICKSNARE_DEMUCS_MODEL", "htdemucs_ft")
+SHIFTS = int(os.environ.get("KICKSNARE_DEMUCS_SHIFTS", "1"))
+LEGACY = {"model": "htdemucs", "shifts": 1}   # músicas separadas antes de existir separation.json
+BAG_SIZE = {"htdemucs_ft": 4, "mdx": 4, "mdx_extra": 4, "mdx_q": 4, "mdx_extra_q": 4}  # redes por modelo
+# derivados de drums.wav: ficam velhos quando a separação é refeita
+DERIVED = ("no_drums.wav", "no_drums.mp3", "drums-gate.mp3", "drums.mp3")
+
+
+def separation_config() -> dict:
+    return {"model": MODEL, "shifts": SHIFTS}
+
+
+def needs_separation(song_dir: Path) -> bool:
+    """Falta drums.wav, ou ele foi gerado com outro modelo/shifts (ex.: música antiga reprocessada)."""
+    if not (song_dir / "drums.wav").exists():
+        return True
+    info = song_dir / "separation.json"
+    done = json.loads(info.read_text()) if info.exists() else LEGACY
+    return done != separation_config()
+
+
+def separate_drums(audio: Path, segment: int = 7, on_progress=None) -> tuple[Path, dict]:
     """Gera <dir do audio>/drums.wav (e no_drums.wav). `on_progress(0..1)` recebe o avanço do Demucs."""
-    import os
     import re
 
     out = audio.parent / "drums.wav"
-    if out.exists():
+    if not needs_separation(audio.parent):
         return out, {"cached": True}
+    model, cfg = MODEL, separation_config()
 
-    pct = re.compile(r"(\d{1,3})%\|")
+    # Uma barra do tqdm por rede e por shift, cada uma de 0 a 100%. "63.0/63.0 [" casa só as barras
+    # do áudio (em segundos); as do download dos pesos ("80.2M/80.2M") ficam de fora.
+    pct = re.compile(r"(\d{1,3})%\|[^|]*\|\s*[\d.]+/[\d.]+ \[")
+    passes = BAG_SIZE.get(model, 1) * SHIFTS
     with tempfile.TemporaryDirectory(prefix="kicksnare-demucs-") as tmp:
         cmd = [
             sys.executable, "-m", "demucs",
-            "-n", model, "--two-stems", "drums",
+            "-n", model, "--two-stems", "drums", "--shifts", str(SHIFTS),
             "--segment", str(segment), "-j", "1", "-d", "cpu",
             "-o", tmp, str(audio),
         ]
         started = time.monotonic()
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        tail, last = b"", -1
+        tail, last, done = b"", -1, 0
         while True:
             chunk = os.read(proc.stderr.fileno(), 4096)    # o tqdm atualiza com \r, não com \n
             if not chunk:
@@ -41,21 +71,26 @@ def separate_drums(audio: Path, model: str = "htdemucs", segment: int = 7, on_pr
             tail = (tail + chunk)[-4096:]
             m = pct.findall(tail.decode("utf-8", "ignore"))
             if m and int(m[-1]) != last:
+                if int(m[-1]) < last:   # começou a barra da próxima rede/shift
+                    done += 1
                 last = int(m[-1])
                 if on_progress:
-                    on_progress(min(1.0, last / 100))
+                    on_progress(min(1.0, (min(done, passes - 1) + last / 100) / passes))
         proc.wait()
         elapsed = time.monotonic() - started
         if proc.returncode != 0:
             msg = "\n".join(tail.decode("utf-8", "ignore").replace("\r", "\n").strip().splitlines()[-8:])
             raise RuntimeError(f"demucs falhou:\n{msg}")
+        for name in DERIVED:
+            (audio.parent / name).unlink(missing_ok=True)
         produced = Path(tmp) / model / audio.stem / "drums.wav"
         shutil.move(str(produced), out)
         rest = Path(tmp) / model / audio.stem / "no_drums.wav"
         if rest.exists():
             shutil.move(str(rest), audio.parent / "no_drums.wav")
 
-    return out, {"cached": False, "seconds": round(elapsed, 1), "peak_ram_mb": round(_children_peak_mb())}
+    (audio.parent / "separation.json").write_text(json.dumps(cfg))
+    return out, {"cached": False, **cfg, "seconds": round(elapsed, 1), "peak_ram_mb": round(_children_peak_mb())}
 
 
 def ensure_no_drums(song_dir: Path) -> Path:

@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
 <link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
 <meta name="theme-color" content="#16181d">
-<link rel="stylesheet" href="__BASE__/static/base.css?v=3">
+<link rel="stylesheet" href="__BASE__/static/base.css?v=4">
 </head>
 <body>
 <header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare — início"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
@@ -41,8 +41,14 @@
       <label id="mineWrap" class="muted small" hidden style="display:none"><input type="checkbox" id="mine">só as minhas</label>
     </span>
   </div>
-  <input type="search" id="q" placeholder="Pesquisar por música, banda ou termo…" aria-label="Pesquisar músicas"
-    autocomplete="off" style="width:100%;margin:0 0 12px">
+  <div class="search">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input type="search" id="q" placeholder="Pesquisar por música, banda ou termo…" aria-label="Pesquisar músicas"
+      autocomplete="off" spellcheck="false">
+    <span id="qCount" class="muted small" aria-live="polite"></span>
+    <kbd id="qKey" title="Atalho para pesquisar">/</kbd>
+  </div>
   <div class="panel" id="list"><span class="muted">Carregando…</span></div>
 </main>
 <script src="__BASE__/static/auth.js" data-base="__BASE__"></script>
@@ -79,6 +85,7 @@ function render(all) {
   const songs = terms.length
     ? all.filter((s) => { const hay = norm([s.title, s.artist, s.owner].join(" ")); return terms.every((t) => hay.includes(t)); })
     : all;
+  $("#qCount").textContent = terms.length ? `${songs.length} de ${all.length}` : "";
   if (!songs.length) { list.innerHTML = '<span class="muted">Nenhuma música encontrada para essa pesquisa.</span>'; return; }
   const mode = $("#group").value;
   const name = (s) => s.title || s.source || "";
@@ -219,6 +226,11 @@ fetch(BASE + "/api/auth/me").then((r) => r.json()).then((u) => {
 }).catch(() => {});
 $("#mine").onchange = load;
 $("#q").addEventListener("input", () => render(allSongs));
+// "/" foca a pesquisa (fora de outros campos); Esc limpa
+document.addEventListener("keydown", (e) => {
+  if (e.key === "/" && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) { e.preventDefault(); $("#q").focus(); }
+});
+$("#q").addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#q").value) { $("#q").value = ""; render(allSongs); } });
 try { $("#group").value = localStorage.getItem("ks-group") || "artist"; } catch {}
 $("#group").onchange = () => { try { localStorage.setItem("ks-group", $("#group").value); } catch {} load(); };
 load(); setInterval(() => { if (!renaming) load(); }, 3000);

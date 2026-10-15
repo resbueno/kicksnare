@@ -89,6 +89,24 @@ details.help summary:hover { color: var(--text); }
 details.help[open] summary { margin-bottom: 8px; }
 details.help p { max-width: 70ch; }
 
+/* pesquisa da lista de músicas */
+.search { position: relative; display: flex; align-items: center; margin: 0 0 14px; }
+.search svg { position: absolute; left: 14px; color: var(--muted); pointer-events: none; }
+.search input { width: 100%; min-width: 0; padding: 12px 96px 12px 42px; font: inherit; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; transition: border-color .15s, box-shadow .15s; }
+.search input::placeholder { color: var(--muted); }
+.search input:hover { border-color: color-mix(in srgb, var(--muted) 45%, var(--line)); }
+.search input:focus { outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.search #qCount { position: absolute; right: 44px; pointer-events: none; white-space: nowrap; }
+.search kbd { position: absolute; right: 12px; font: .75rem/1 ui-monospace, monospace; color: var(--muted);
+  border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 3px 6px; pointer-events: none; }
+.search input:focus ~ kbd { display: none; }
+.search input::-webkit-search-cancel-button { margin-right: 4px; cursor: pointer; }
+
+/* página larga (partitura) */
+body.wide main, body.wide .brandbar .in { max-width: 1440px; }
+
 /* faixa de marca: sempre escura, a legenda do logo é branca */
 .brandbar { background: #16181d; border-bottom: 1px solid #2a2d34; }
 .brandbar .in { max-width: 920px; margin: 0 auto; padding: 10px 20px; display: flex; align-items: center;
