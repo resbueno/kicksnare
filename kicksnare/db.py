@@ -115,6 +115,12 @@ def _fair_queue(con) -> list:
     return order
 
 
+def oldest_queued() -> float | None:
+    """Quando chegou a música que espera há mais tempo (o worker alterna com o GrooveBass por isso)."""
+    with connect() as con:
+        return con.execute("SELECT MIN(created) FROM songs WHERE status='queued'").fetchone()[0]
+
+
 def claim_next() -> dict | None:
     with connect() as con:
         con.execute("BEGIN IMMEDIATE")

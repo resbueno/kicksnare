@@ -14,3 +14,12 @@ if BASE:
     application.mount(BASE, app)
 else:
     application = app
+
+# GrooveBass (baixo) roda no mesmo processo quando o pacote está instalado na imagem
+try:
+    import groovebass  # noqa: F401
+except ModuleNotFoundError:
+    groovebass = None
+if groovebass is not None and BASE:
+    from groovebass.web import BASE as GB_BASE, app as gb_app   # erro aqui deve aparecer, não sumir
+    application.mount(GB_BASE, gb_app)

@@ -25,7 +25,10 @@ SHIFTS = int(os.environ.get("KICKSNARE_DEMUCS_SHIFTS", "1"))
 LEGACY = {"model": "htdemucs", "shifts": 1}   # músicas separadas antes de existir separation.json
 BAG_SIZE = {"htdemucs_ft": 4, "mdx": 4, "mdx_extra": 4, "mdx_q": 4, "mdx_extra_q": 4}  # redes por modelo
 # derivados de drums.wav: ficam velhos quando a separação é refeita
-DERIVED = ("no_drums.wav", "no_drums.mp3", "drums-gate.mp3", "drums.mp3")
+DERIVED = ("no_drums.wav", "no_drums.mp3", "drums-gate.mp3", "drums.mp3", "bass.wav")
+# O Demucs separa sempre as 4 faixas (o --two-stems só soma as outras três no fim): guardamos também
+# o baixo, que o GrooveBass reaproveita quando a mesma música passa por lá.
+OTHER_STEMS = ("bass", "other", "vocals")
 
 
 def separation_config() -> dict:
@@ -42,7 +45,7 @@ def needs_separation(song_dir: Path) -> bool:
 
 
 def separate_drums(audio: Path, segment: int = 7, on_progress=None) -> tuple[Path, dict]:
-    """Gera <dir do audio>/drums.wav (e no_drums.wav). `on_progress(0..1)` recebe o avanço do Demucs."""
+    """Gera <dir do audio>/drums.wav, bass.wav e no_drums.wav. `on_progress(0..1)` recebe o avanço do Demucs."""
     import re
 
     out = audio.parent / "drums.wav"
@@ -57,7 +60,7 @@ def separate_drums(audio: Path, segment: int = 7, on_progress=None) -> tuple[Pat
     with tempfile.TemporaryDirectory(prefix="kicksnare-demucs-") as tmp:
         cmd = [
             sys.executable, "-m", "demucs",
-            "-n", model, "--two-stems", "drums", "--shifts", str(SHIFTS),
+            "-n", model, "--shifts", str(SHIFTS),
             "--segment", str(segment), "-j", "1", "-d", "cpu",
             "-o", tmp, str(audio),
         ]
@@ -83,14 +86,33 @@ def separate_drums(audio: Path, segment: int = 7, on_progress=None) -> tuple[Pat
             raise RuntimeError(f"demucs falhou:\n{msg}")
         for name in DERIVED:
             (audio.parent / name).unlink(missing_ok=True)
-        produced = Path(tmp) / model / audio.stem / "drums.wav"
-        shutil.move(str(produced), out)
-        rest = Path(tmp) / model / audio.stem / "no_drums.wav"
-        if rest.exists():
-            shutil.move(str(rest), audio.parent / "no_drums.wav")
+        stems = Path(tmp) / model / audio.stem
+        shutil.move(str(stems / "drums.wav"), out)
+        if (stems / "bass.wav").exists():
+            shutil.copyfile(stems / "bass.wav", audio.parent / "bass.wav")
+        _sum_stems([stems / f"{s}.wav" for s in OTHER_STEMS], audio.parent / "no_drums.wav")
 
     (audio.parent / "separation.json").write_text(json.dumps(cfg))
     return out, {"cached": False, **cfg, "seconds": round(elapsed, 1), "peak_ram_mb": round(_children_peak_mb())}
+
+
+def _sum_stems(parts: list, out: Path) -> None:
+    """Soma as faixas que existirem (ex.: baixo + voz + resto = música sem bateria)."""
+    import numpy as np
+    import soundfile as sf
+
+    total, sr = None, None
+    for p in parts:
+        if not p.exists():
+            continue
+        x, sr = sf.read(str(p), dtype="float32")
+        if total is None:
+            total = x
+        else:
+            n = min(len(total), len(x))
+            total = total[:n] + x[:n]
+    if total is not None:
+        sf.write(str(out), np.clip(total, -1.0, 1.0), sr, subtype="PCM_16")
 
 
 def ensure_no_drums(song_dir: Path) -> Path:

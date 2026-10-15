@@ -36,7 +36,9 @@ def _bar_audio(wav: Path, starts: list, end: float) -> tuple[np.ndarray, np.ndar
     freqs = np.fft.rfftfreq(nfft, 1 / sr)
     band = (freqs >= 60) & (freqs <= 2100)
     pc = np.zeros(len(freqs), dtype=int)
-    pc[band] = np.round(12 * np.log2(freqs[band] / 440.0)).astype(int) % 12
+    # classe de altura com 0 = Dó (o Lá 440 é a classe 9); as partes só comparam compassos entre
+    # si, mas a cifra do GrooveBass usa este cromagrama e precisa dos nomes certos
+    pc[band] = (np.round(12 * np.log2(freqs[band] / 440.0)).astype(int) + 9) % 12
     win = np.hanning(nfft).astype(np.float32)
 
     edges = list(starts) + [end]

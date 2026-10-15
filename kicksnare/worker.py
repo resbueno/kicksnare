@@ -106,12 +106,32 @@ def process(song: dict) -> None:
               timings=timings, progress=1.0)
 
 
+def _groovebass():
+    """GrooveBass (baixo) roda nestes mesmos containers quando o pacote está instalado na imagem."""
+    try:
+        import groovebass  # noqa: F401
+    except ModuleNotFoundError:
+        return None
+    from groovebass import worker as gb       # erro aqui deve aparecer, não sumir
+    return gb
+
+
 def main() -> None:
     n = db.requeue_interrupted()
     if n:
         print(f"reenfileirados {n} jobs interrompidos", flush=True)
+    gb = _groovebass()
+    if gb:
+        n = gb.requeue()
+        print(f"GrooveBass ativo{f' (reenfileirados {n})' if n else ''}", flush=True)
     print("worker pronto", flush=True)
     while True:
+        # uma música por vez no total: atende a fila cuja música espera há mais tempo
+        if gb:
+            ks_old, gb_old = db.oldest_queued(), gb.oldest_queued()
+            if gb_old is not None and (ks_old is None or gb_old < ks_old):
+                gb.run_next()
+                continue
         song = db.claim_next()
         if not song:
             time.sleep(2)

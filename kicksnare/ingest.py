@@ -49,8 +49,9 @@ def file_song_id(path: Path) -> str:
     return "file-" + hashlib.sha1(f"{path.name}:{path.stat().st_size}".encode()).hexdigest()[:10]
 
 
-def ingest(source: str, song_id: str | None = None) -> tuple[str, Path]:
-    """Retorna (song_id, caminho do audio.wav). Usa cache em data/<song_id>/."""
+def ingest(source: str, song_id: str | None = None, data_dir: Path | None = None) -> tuple[str, Path]:
+    """Retorna (song_id, caminho do audio.wav). Usa cache em <data_dir>/<song_id>/ (padrão: DATA_DIR;
+    o GrooveBass passa a pasta dele)."""
     title, extra = None, {}
     if is_url(source):
         vid, title, extra = _video_meta(source)
@@ -62,7 +63,7 @@ def ingest(source: str, song_id: str | None = None) -> tuple[str, Path]:
         song_id = song_id or file_song_id(src)
         title = src.stem
 
-    song_dir = DATA_DIR / song_id
+    song_dir = (data_dir or DATA_DIR) / song_id
     wav = song_dir / "audio.wav"
     song_dir.mkdir(parents=True, exist_ok=True)
     meta = song_dir / "meta.json"
