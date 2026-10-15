@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
 <link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
 <meta name="theme-color" content="#16181d">
-<link rel="stylesheet" href="__BASE__/static/base.css?v=4">
+<link rel="stylesheet" href="__BASE__/static/base.css?v=5">
 </head>
 <body>
 <header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare — início"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
@@ -28,7 +28,15 @@
     </div>
   </div>
 
-  <div class="row" style="justify-content:space-between;margin:48px 0 16px">
+  <div class="search" style="margin-top:48px">
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input type="search" id="q" placeholder="Pesquisar por música, banda ou termo…" aria-label="Pesquisar músicas"
+      autocomplete="off" spellcheck="false">
+    <span id="qCount" class="muted small" aria-live="polite"></span>
+    <kbd id="qKey" title="Atalho para pesquisar">/</kbd>
+  </div>
+  <div class="row" style="justify-content:space-between;margin:20px 0 16px">
     <h2 style="margin:0">Músicas</h2>
     <span class="row">
       <label class="muted small">Organizar
@@ -38,16 +46,8 @@
           <option value="flat">Lista simples</option>
         </select>
       </label>
-      <label id="mineWrap" class="muted small" hidden style="display:none"><input type="checkbox" id="mine">só as minhas</label>
+      <label class="muted small"><input type="checkbox" id="mine">só as minhas</label>
     </span>
-  </div>
-  <div class="search">
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"
-      stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-    <input type="search" id="q" placeholder="Pesquisar por música, banda ou termo…" aria-label="Pesquisar músicas"
-      autocomplete="off" spellcheck="false">
-    <span id="qCount" class="muted small" aria-live="polite"></span>
-    <kbd id="qKey" title="Atalho para pesquisar">/</kbd>
   </div>
   <div class="panel" id="list"><span class="muted">Carregando…</span></div>
 </main>
@@ -96,15 +96,36 @@ function render(all) {
     if (mode === "artist" && !a.artist !== !b.artist) return a.artist ? -1 : 1;
     return collator.compare(key(a), key(b)) || collator.compare(name(a), name(b));
   });
-  const out = []; let curLetter = null, curBand = null;
+  const out = []; let curLetter = null, curBand = null, box = null;
   for (const s of sorted) {
     const noBand = mode === "artist" && !s.artist;
     const L = noBand ? "—" : letterOf(key(s));
-    if (L !== curLetter) { curLetter = L; curBand = null; out.push(heading(noBand ? "Sem banda" : L, "h3")); }
-    if (mode === "artist" && !noBand && s.artist !== curBand) { curBand = s.artist; out.push(heading(s.artist, "h4")); }
-    out.push(songRow(s));
+    if (L !== curLetter) { curLetter = L; curBand = null; box = null; out.push(heading(noBand ? "Sem banda" : L, "h3")); }
+    if (mode === "artist" && !noBand && s.artist !== curBand) {
+      curBand = s.artist;
+      box = bandBox(s.artist, songs.filter((x) => x.artist === s.artist).length, terms.length > 0);
+      out.push(box);
+    }
+    (box || { append: (r) => out.push(r) }).append(songRow(s));
   }
   list.replaceChildren(...out);
+}
+
+// acordeão por banda; o que está aberto sobrevive à atualização da lista (e ao recarregar a página)
+let openBands = new Set();
+try { openBands = new Set(JSON.parse(localStorage.getItem("ks-open-bands") || "[]")); } catch {}
+function bandBox(band, count, searching) {
+  const d = document.createElement("details"); d.className = "band";
+  d.open = searching || openBands.has(band);       // pesquisando: tudo aberto para mostrar os resultados
+  const sm = document.createElement("summary");
+  const n = document.createElement("span"); n.className = "muted small"; n.textContent = ` ${count}`;
+  sm.append(band, n); d.append(sm);
+  d.addEventListener("toggle", () => {
+    if (searching) return;
+    d.open ? openBands.add(band) : openBands.delete(band);
+    try { localStorage.setItem("ks-open-bands", JSON.stringify([...openBands])); } catch {}
+  });
+  return d;
 }
 
 function songRow(s) {
@@ -120,13 +141,16 @@ function songRow(s) {
     if (!left.contains(title)) left.append(title);
     const meta = document.createElement("div"); meta.className = "muted";
     meta.style.fontSize = ".85rem";
-    if (isAdmin && s.owner) {
+    if (s.owner && (isAdmin || !s.can_edit)) {
       const o = document.createElement("span"); o.className = "chip"; o.textContent = "de " + s.owner;
       o.style.marginRight = "8px"; left.append(o);
     }
+    if (s.shared && s.can_edit) {
+      const o = document.createElement("span"); o.className = "chip ok"; o.textContent = "compartilhada";
+      o.title = "Os outros usuários podem ver, ouvir e baixar"; o.style.marginRight = "8px"; left.append(o);
+    }
     if (s.status === "done" && s.stats) {
-      meta.textContent = `${s.stats.bars} compassos · ${Math.round(s.stats.bpm_median)} BPM` +
-        (s.stats.bars_reliable ? "" : " · compassos pouco confiáveis");
+      meta.textContent = `${s.stats.bars} compassos · ${Math.round(s.stats.bpm_median)} BPM`;
     } else if (s.status === "running") {
       meta.textContent = (s.message || "Processando") + " · " + fmt(Date.now() / 1000 - s.started) +
         (s.eta ? " · " + etaText(s.eta) : "");
@@ -148,6 +172,20 @@ function songRow(s) {
     chip.className = "chip " + ({ done: "ok", error: "err", running: "warn" }[s.status] || "");
     chip.textContent = { done: "pronto", error: "erro", running: STAGES[s.stage] || "processando", queued: "na fila" }[s.status];
     right.append(chip);
+    row.append(left, right);
+    if (!s.can_edit) return row;                 // música de outro usuário: só abrir
+    if (s.status === "done") {
+      const sh = document.createElement("button");
+      sh.textContent = s.shared ? "Tornar privada" : "Compartilhar";
+      sh.title = s.shared ? "Só você volta a ver esta música" : "Deixa os outros usuários verem, ouvirem e baixarem (sem alterar)";
+      sh.onclick = async () => {
+        const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(s.id)}/share`, { method: "POST",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shared: !s.shared }) });
+        if (!r.ok) { try { alert((await r.json()).detail); } catch {} }
+        load();
+      };
+      right.append(sh);
+    }
     const rn = document.createElement("button"); rn.textContent = "Editar";
     rn.onclick = () => {
       const t = document.createElement("input"); t.type = "text"; t.maxLength = 120; t.value = s.title || "";
@@ -191,7 +229,6 @@ function songRow(s) {
       b.onclick = async () => { await fetch(`${BASE}/api/songs/${s.id}/retry`, { method: "POST" }); load(); };
       right.append(b);
     }
-    row.append(left, right);
     return row;
   }
 }
@@ -221,7 +258,6 @@ $("#file").addEventListener("change", async (ev) => {
 let isAdmin = false, renaming = false;
 fetch(BASE + "/api/auth/me").then((r) => r.json()).then((u) => {
   isAdmin = !!u.is_admin;
-  if (isAdmin) { $("#mineWrap").hidden = false; $("#mineWrap").style.display = ""; }
   load();
 }).catch(() => {});
 $("#mine").onchange = load;

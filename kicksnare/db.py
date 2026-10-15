@@ -53,8 +53,9 @@ def connect():
     cols = {r["name"] for r in con.execute("PRAGMA table_info(songs)")}
     if "owner_id" not in cols:      # migração: músicas existentes ficam sem dono até alguém assumir
         con.execute("ALTER TABLE songs ADD COLUMN owner_id INTEGER")
-    for col, ddl in (("duration", "REAL"), ("stage_started", "REAL"), ("timings", "TEXT"), ("progress", "REAL"), ("artist", "TEXT")):
-        if col not in cols:         # estimativa de tempo + banda/autor informado pelo usuário
+    for col, ddl in (("duration", "REAL"), ("stage_started", "REAL"), ("timings", "TEXT"), ("progress", "REAL"), ("artist", "TEXT"),
+                     ("shared", "INTEGER NOT NULL DEFAULT 0")):
+        if col not in cols:         # estimativa de tempo, banda/autor, música aberta aos outros usuários
             con.execute(f"ALTER TABLE songs ADD COLUMN {col} {ddl}")
     ucols = {r["name"] for r in con.execute("PRAGMA table_info(users)")}
     if "is_admin" not in ucols:
@@ -146,13 +147,17 @@ def get(song_id: str) -> dict | None:
         return _row(r) if r else None
 
 
-def list_songs(owner_id: int | None = None) -> list[dict]:
-    """Do dono pedido; com owner_id=None, de todos (visão do admin). Inclui o nome do dono em `owner`."""
+def list_songs(owner_id: int | None = None, with_shared: bool = False) -> list[dict]:
+    """Do dono pedido (e, com with_shared, as prontas que outros compartilharam); com owner_id=None,
+    de todos (visão do admin). Inclui o nome do dono em `owner`."""
     q = ("SELECT songs.*, users.username AS owner FROM songs "
          "LEFT JOIN users ON users.id = songs.owner_id")
     with connect() as con:
         if owner_id is None:
             rows = con.execute(q + " ORDER BY songs.created DESC")
+        elif with_shared:
+            rows = con.execute(q + " WHERE songs.owner_id=? OR (songs.shared=1 AND songs.status='done') "
+                               "ORDER BY songs.created DESC", (owner_id,))
         else:
             rows = con.execute(q + " WHERE songs.owner_id=? ORDER BY songs.created DESC", (owner_id,))
         return [_row(r) for r in rows]

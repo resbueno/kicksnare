@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
 <link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
 <meta name="theme-color" content="#16181d">
-<link rel="stylesheet" href="__BASE__/static/base.css?v=4">
+<link rel="stylesheet" href="__BASE__/static/base.css?v=5">
 <style>
   [hidden] { display: none !important; }
   #score { background: #fff; border-radius: 12px; padding: 8px 4px; overflow-x: auto; border: 1px solid var(--line); }
@@ -160,6 +160,7 @@
     </div>
     <div id="score"></div>
 
+    <section id="patSec" hidden>
     <h2>Padrões</h2>
     <details class="help">
       <summary>Como funciona</summary>
@@ -175,6 +176,7 @@
       <div><button id="reset" class="sm ghost">Desfazer todas as correções</button></div>
     </div>
     <div id="patterns"></div>
+    </section>
   </div>
 </main>
 
@@ -189,12 +191,10 @@ const PAGE = 16;
 let osmd = null, first = 1, totalBars = 0;
 let steps = null, timing = null, curIdx = -1, manualPage = false;
 
-function chip(text, cls) { const c = document.createElement("span"); c.className = "chip " + (cls || ""); c.textContent = text; $("#chips").append(c); }
-
 async function boot() {
   const song = await (await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}`)).json();
   $("#title").textContent = song.title || id;
-  $("#renameBtn").hidden = false;
+  $("#renameBtn").hidden = !song.can_edit;
   $("#chips").replaceChildren();
   if (song.status !== "done") {
     let txt = song.status === "error" ? "Erro: " + (song.error || "") : (song.message || "Processando…");
@@ -209,21 +209,25 @@ async function boot() {
     return;
   }
   $("#status").textContent = "";
-  $("#reprocessBtn").hidden = false;
-  const link = document.createElement("a"); link.href = `${BASE}/songs/${encodeURIComponent(id)}/sheet`;
-  link.textContent = "Sincronizar com partitura em PDF →"; link.className = "small";
+  $("#reprocessBtn").hidden = !song.can_edit;
+  if (song.can_edit) {
+    const link = document.createElement("a"); link.href = `${BASE}/songs/${encodeURIComponent(id)}/sheet`;
+    link.textContent = "Sincronizar com partitura em PDF →"; link.className = "small";
+    link.style.marginLeft = "auto"; $("#chips").append(link);
+  } else if (song.owner) {
+    const c = document.createElement("span"); c.className = "chip"; c.textContent = "compartilhada por " + song.owner;
+    $("#chips").append(c);
+  }
   const st = song.stats || {};
-  chip(`${st.bars} compassos`); chip(`${Math.round(st.bpm_median)} BPM`); window.songBpm = st.bpm_median;
-  chip(st.subdiv === 3 ? "grade de tercinas" : "grade de semicolcheias");
-  chip(st.bars_reliable ? "compassos confiáveis" : "compassos pouco confiáveis", st.bars_reliable ? "ok" : "warn");
-  link.style.marginLeft = "auto"; $("#chips").append(link);
+  window.songBpm = st.bpm_median;
   totalBars = st.bars;
   $("#metroBpm").value = store.get("metroBpm:" + id, String(Math.round(st.bpm_median) || 120));
   $("#player").src = `${BASE}/api/songs/${encodeURIComponent(id)}/track/${($("#track") || {}).value || "mix"}.mp3`;
   $("#ready").hidden = false;
   await drawScore(true);
   await initSync();
-  await loadPatterns();
+  $("#patSec").hidden = !song.can_edit;            // padrões alteram a partitura: só dono/admin
+  if (song.can_edit) await loadPatterns();
 }
 
 async function drawScore(reload) {

@@ -89,6 +89,17 @@ details.help summary:hover { color: var(--text); }
 details.help[open] summary { margin-bottom: 8px; }
 details.help p { max-width: 70ch; }
 
+/* acordeão de banda na lista de músicas */
+details.band { border-top: 1px solid var(--line); }
+details.band summary { cursor: pointer; padding: 10px 2px; font-weight: 600; list-style: none;
+  display: flex; align-items: center; gap: 8px; }
+details.band summary::-webkit-details-marker { display: none; }
+details.band summary::before { content: "▸"; color: var(--muted); transition: transform .15s; display: inline-block; width: 1em; }
+details.band[open] summary::before { transform: rotate(90deg); }
+details.band summary:hover { color: var(--accent); }
+details.band > .song { margin-left: 1.5em; }
+details.band > .song:first-of-type { border-top: 0; }
+
 /* pesquisa da lista de músicas */
 .search { position: relative; display: flex; align-items: center; margin: 0 0 14px; }
 .search svg { position: absolute; left: 14px; color: var(--muted); pointer-events: none; }

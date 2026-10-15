@@ -119,19 +119,26 @@ def _fresh(song: dict) -> dict:
     return song
 
 
-def _song(song_id: str) -> dict:
-    """Música do usuário logado (ou qualquer uma, para o admin). De outro dono = 404."""
+def _song(song_id: str, write: bool = False) -> dict:
+    """Música do usuário logado (ou qualquer uma, para o admin). De outro dono: só leitura se ele a
+    compartilhou e ela está pronta; senão 404. `write` = a rota altera a música (só dono/admin)."""
     user = _require_user()
     if not ID_RE.match(song_id):
         raise HTTPException(404, "música não encontrada")
     song = db.get(song_id)
-    if not song or (song.get("owner_id") != user["id"] and not user.get("is_admin")):
+    if not song:
         raise HTTPException(404, "música não encontrada")
-    return _fresh(song)
+    can_edit = song.get("owner_id") == user["id"] or bool(user.get("is_admin"))
+    if not can_edit:
+        if not (song.get("shared") and song["status"] == "done"):
+            raise HTTPException(404, "música não encontrada")
+        if write:
+            raise HTTPException(403, "só quem enviou a música pode alterá-la")
+    return {**_fresh(song), "can_edit": can_edit}
 
 
-def _ready(song_id: str) -> Path:
-    song = _song(song_id)
+def _ready(song_id: str, write: bool = False) -> Path:
+    song = _song(song_id, write)
     if song["status"] != "done":
         raise HTTPException(409, "a música ainda não foi processada")
     return DATA_DIR / song_id
@@ -337,10 +344,13 @@ def _check_quota(user: dict) -> None:
 
 @app.get("/api/songs")
 def list_songs(mine: bool = False) -> list[dict]:
-    """O admin vê as músicas de todos (com `owner`); `?mine=1` restringe às dele."""
+    """O admin vê as músicas de todos; os demais, as suas e as prontas que outros compartilharam.
+    `?mine=1` restringe às próprias. `can_edit` diz se o usuário pode alterar cada uma."""
     user = _require_user()
-    owner = user["id"] if (mine or not user.get("is_admin")) else None
-    songs = [_fresh(s) for s in db.list_songs(owner)]
+    admin = bool(user.get("is_admin"))
+    owner = user["id"] if (mine or not admin) else None
+    songs = [{**_fresh(s), "can_edit": admin or s.get("owner_id") == user["id"]}
+             for s in db.list_songs(owner, with_shared=not mine)]
     if any(s["status"] in ("queued", "running") for s in songs):
         etalib.annotate(songs, db.active_songs(), db.history())
     return songs
@@ -387,7 +397,20 @@ def get_song(song_id: str) -> dict:
     song = _song(song_id)
     if song["status"] in ("queued", "running"):
         etalib.annotate([song], db.active_songs(), db.history())
-    return song
+    owner = db.get_user(song["owner_id"]) if song.get("owner_id") else None
+    return {**song, "owner": owner["username"] if owner else None}
+
+
+class Share(BaseModel):
+    shared: bool
+
+
+@app.post("/api/songs/{song_id}/share")
+def share_song(song_id: str, body: Share) -> dict:
+    """Abre (ou fecha) a música para os outros usuários verem, ouvirem e baixarem; só o dono altera."""
+    _song(song_id, write=True)
+    db.update(song_id, shared=1 if body.shared else 0)
+    return get_song(song_id)
 
 
 class Rename(BaseModel):
@@ -402,7 +425,7 @@ def _clean(text: str | None) -> str:
 @app.patch("/api/songs/{song_id}")
 def rename_song(song_id: str, body: Rename) -> dict:
     """Edita nome da música e/ou banda (autor). Vale para o dono e para o admin."""
-    song = _song(song_id)
+    song = _song(song_id, write=True)
     fields: dict = {}
     if body.title is not None:
         title = _clean(body.title)
@@ -437,7 +460,7 @@ def rename_song(song_id: str, body: Rename) -> dict:
 
 @app.delete("/api/songs/{song_id}")
 def delete_song(song_id: str) -> dict:
-    song = _song(song_id)
+    song = _song(song_id, write=True)
     if song["status"] == "running":
         raise HTTPException(409, "está em processamento; aguarde terminar")
     db.delete_song(song_id)
@@ -453,7 +476,7 @@ def delete_song(song_id: str) -> dict:
 
 @app.post("/api/songs/{song_id}/retry")
 def retry(song_id: str) -> dict:
-    song = _song(song_id)
+    song = _song(song_id, write=True)
     if song["status"] == "running":
         raise HTTPException(409, "já está em processamento")
     db.update(song_id, status="queued", message="Na fila", error=None, stage=None)
@@ -468,7 +491,7 @@ def reprocess(song_id: str) -> dict:
     As edições de padrão apontam para grupos de compassos que mudam com a nova transcrição: ficam
     guardadas em edits.bak.json. O mp3 da bateria solo depende dos golpes (events.json) e é refeito.
     """
-    song = _song(song_id)
+    song = _song(song_id, write=True)
     if song["status"] in ("queued", "running"):
         raise HTTPException(409, "já está na fila ou em processamento")
     song_dir = DATA_DIR / song_id
@@ -586,7 +609,7 @@ def _sheet_state(song_dir: Path) -> dict:
 
 @app.post("/api/songs/{song_id}/sheet")
 async def upload_sheet(song_id: str, file: UploadFile = File(...)) -> dict:
-    song_dir = _ready(song_id)
+    song_dir = _ready(song_id, write=True)
     data = await file.read(MAX_PDF + 1)
     if len(data) > MAX_PDF:
         raise HTTPException(413, "PDF grande demais (máx. 50 MB)")
@@ -645,7 +668,7 @@ class LayoutBody(BaseModel):
 
 @app.put("/api/songs/{song_id}/sheet/layout")
 def put_layout(song_id: str, body: LayoutBody) -> dict:
-    song_dir = _ready(song_id)
+    song_dir = _ready(song_id, write=True)
     lf = _sheet_dir(song_dir) / "layout.json"
     if not lf.exists():
         raise HTTPException(404, "nenhuma partitura enviada")
@@ -675,7 +698,7 @@ class SyncBody(BaseModel):
 
 @app.put("/api/songs/{song_id}/sheet/sync")
 def put_sync(song_id: str, body: SyncBody) -> dict:
-    song_dir = _ready(song_id)
+    song_dir = _ready(song_id, write=True)
     sdir = _sheet_dir(song_dir)
     if not (sdir / "layout.json").exists():
         raise HTTPException(404, "nenhuma partitura enviada")
@@ -697,7 +720,7 @@ def put_sync(song_id: str, body: SyncBody) -> dict:
 
 @app.delete("/api/songs/{song_id}/sheet")
 def delete_sheet(song_id: str) -> dict:
-    shutil.rmtree(_sheet_dir(_ready(song_id)), ignore_errors=True)
+    shutil.rmtree(_sheet_dir(_ready(song_id, write=True)), ignore_errors=True)
     return {"exists": False}
 
 
@@ -767,7 +790,7 @@ class PatternBody(BaseModel):
 
 @app.post("/api/songs/{song_id}/patterns/{cluster_id}")
 def set_pattern(song_id: str, cluster_id: int, body: PatternBody) -> dict:
-    song_dir = _ready(song_id)
+    song_dir = _ready(song_id, write=True)
     measures, clusters, rows, edited = _load(song_dir)
     state = {c.id: c for c in with_state(clusters, edited)}
     if cluster_id not in state:
@@ -807,7 +830,7 @@ def set_pattern(song_id: str, cluster_id: int, body: PatternBody) -> dict:
 
 @app.post("/api/songs/{song_id}/edits/reset")
 def reset_edits(song_id: str) -> dict:
-    song_dir = _ready(song_id)
+    song_dir = _ready(song_id, write=True)
     (song_dir / "edits.json").unlink(missing_ok=True)
     measures, clusters, _, edited = _load(song_dir)
     _rebuild_score(song_dir, edited)
