@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import auth as authlib
-from . import db, eta as etalib, sections as sectionslib, sheet as sheetlib
+from . import companion, db, eta as etalib, sections as sectionslib, sheet as sheetlib
 from .ingest import DATA_DIR, file_song_id
 from .separate import encode_mp3, ensure_no_drums
 from .patterns import (
@@ -369,7 +369,9 @@ def add_song(body: NewSong) -> dict:
     if not (existing and existing.get("owner_id") == user["id"]
             and existing["status"] in ("queued", "running", "done")):
         _check_quota(user)
-    return db.enqueue(song_id, url, owner_id=user["id"])
+    song = db.enqueue(song_id, url, owner_id=user["id"])
+    companion.mirror_enqueue(song_id, url, None, user["id"])     # aparece também no GrooveBass
+    return song
 
 
 @app.post("/api/upload")
@@ -389,7 +391,10 @@ async def upload(file: UploadFile = File(...)) -> dict:
                 dest.unlink(missing_ok=True)
                 raise HTTPException(413, "arquivo grande demais (máx. 300 MB)")
             out.write(chunk)
-    return db.enqueue(_scoped_id(user, file_song_id(dest)), str(dest), title=Path(name).stem, owner_id=user["id"])
+    song_id = _scoped_id(user, file_song_id(dest))
+    song = db.enqueue(song_id, str(dest), title=Path(name).stem, owner_id=user["id"])
+    companion.mirror_enqueue(song_id, str(dest), Path(name).stem, user["id"])
+    return song
 
 
 @app.get("/api/songs/{song_id}")
@@ -410,6 +415,7 @@ def share_song(song_id: str, body: Share) -> dict:
     """Abre (ou fecha) a música para os outros usuários verem, ouvirem e baixarem; só o dono altera."""
     _song(song_id, write=True)
     db.update(song_id, shared=1 if body.shared else 0)
+    companion.mirror_update(song_id, shared=1 if body.shared else 0)
     return get_song(song_id)
 
 
@@ -442,6 +448,7 @@ def rename_song(song_id: str, body: Rename) -> dict:
     if not fields:
         return song
     db.update(song_id, **fields)
+    companion.mirror_update(song_id, **fields)
     title = fields.get("title")
     if title and title != song.get("title"):
         song_dir = DATA_DIR / song_id

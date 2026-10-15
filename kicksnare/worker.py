@@ -8,7 +8,7 @@ import sys
 import time
 import traceback
 
-from . import db, identify, sections
+from . import companion, db, identify, sections
 from .ingest import DATA_DIR, ingest
 from .separate import encode_mp3, ensure_no_drums, needs_separation, separate_drums
 
@@ -54,6 +54,7 @@ def _identify(sid: str, meta) -> None:
             fields["artist"] = found["artist"]
         if fields:
             db.update(sid, **fields)
+            companion.mirror_identified(sid, fields)  # banda e nome identificados valem no GrooveBass
         info["identified"] = True
         meta.write_text(json.dumps(info))
         print(f"[{sid}] identificado: {raw!r} -> {found}", flush=True)
@@ -65,6 +66,9 @@ def process(song: dict) -> None:
     sid, source = song["id"], song["source"]
 
     _set(sid, "ingest", "Baixando áudio" if source.startswith("http") else "Preparando áudio")
+    reused = companion.reuse_from_groovebass(DATA_DIR / sid)  # GrooveBass já baixou/separou?
+    if reused:
+        print(f"[{sid}] reaproveitado do GrooveBass: {reused}", flush=True)
     _, audio = ingest(source, song_id=sid)
     meta = DATA_DIR / sid / "meta.json"
     if meta.exists() and not (db.get(sid) or {}).get("title"):   # nome editado pelo usuário prevalece
