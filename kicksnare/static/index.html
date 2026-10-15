@@ -12,6 +12,10 @@
 <body>
 <header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare — início"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
 <main>
+  <section id="queueBox" class="panel" hidden style="margin-bottom:28px">
+    <h2 style="margin:0 0 6px;font-size:1.05rem">Fila de processamento <span id="queueCount" class="muted small"></span></h2>
+    <div id="queueList"></div>
+  </section>
   <h1>Kicksnare</h1>
   <p class="lead">Cole um link do YouTube ou envie um arquivo de áudio. A bateria é isolada e transcrita em partitura.</p>
 
@@ -77,10 +81,22 @@ const heading = (text, tag) => { const h = document.createElement(tag); h.textCo
 const norm = (t) => (t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 let allSongs = [];
 
-function render(all) {
-  allSongs = all;
+// fila (processando + na fila) fica no topo da tela, na ordem em que o worker vai pegar
+const inQueue = (s) => s.status === "queued" || s.status === "running";
+function renderQueue(active) {
+  active.sort((a, b) => (b.status === "running") - (a.status === "running")
+    || ((a.eta?.queue_ahead ?? 1e9) - (b.eta?.queue_ahead ?? 1e9)) || a.created - b.created);
+  $("#queueBox").hidden = !active.length;
+  $("#queueCount").textContent = active.length ? `(${active.length})` : "";
+  if (!renaming) $("#queueList").replaceChildren(...active.map(songRow));
+}
+
+function render(fetched) {
+  renderQueue(fetched.filter(inQueue));
+  const all = fetched.filter((s) => !inQueue(s));
+  allSongs = fetched;
   const list = $("#list");
-  if (!all.length) { list.innerHTML = '<span class="muted">Nenhuma música ainda.</span>'; return; }
+  if (!all.length) { list.innerHTML = '<span class="muted">Nenhuma música pronta ainda.</span>'; return; }
   const terms = norm($("#q").value).split(/\s+/).filter(Boolean);   // todos os termos precisam aparecer
   const songs = terms.length
     ? all.filter((s) => { const hay = norm([s.title, s.artist, s.owner].join(" ")); return terms.every((t) => hay.includes(t)); })
