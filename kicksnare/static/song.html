@@ -10,7 +10,9 @@
 <link rel="stylesheet" href="__BASE__/static/base.css?v=5">
 <style>
   [hidden] { display: none !important; }
-  #score { background: #fff; border-radius: 12px; padding: 8px 4px; overflow-x: auto; border: 1px solid var(--line); }
+  #score { background: #fff; border-radius: 12px; padding: 8px 4px; overflow-x: hidden; border: 1px solid var(--line); }
+  /* o OSMD mede a largura do próprio container: sem padding/borda ali, o desenho cabe exato na tela */
+  #osmd { width: 100%; padding: 0; border: 0; }
   .pager { display: flex; gap: 12px; align-items: center; }
   /* controles em duas linhas: reprodução / navegação */
   .controls { display: flex; flex-direction: column; gap: 18px; }
@@ -35,7 +37,7 @@
   #fs { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--bg); }
   #fs .fs-top { display: flex; align-items: center; gap: 12px 20px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   #fs .fs-top h2 { margin: 0; font-size: 1.05rem; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #fsBody { flex: 1 1 auto; overflow: auto; padding: 12px 16px; }
+  #fsBody { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 12px 16px; }
   #fsBody #score { min-height: 100%; }
   #fs .fs-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; padding: 10px 16px;
     border-top: 1px solid var(--line); background: var(--panel); }
@@ -171,7 +173,7 @@
         <span id="dlMsg" class="muted small"></span>
       </div>
     </div>
-    <div id="score"></div>
+    <div id="score"><div id="osmd"></div></div>
 
     <section id="patSec" hidden>
     <h2>Padrões</h2>
@@ -260,7 +262,7 @@ async function boot() {
 }
 
 async function drawScore(reload) {
-  const holder = $("#score");
+  const holder = $("#osmd");
   if (!osmd) {
     osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(holder, { autoResize: true, drawTitle: false, drawSubtitle: false, drawComposer: false, drawPartNames: false,
       cursorsOptions: [{ type: 0, color: "#c2410c", alpha: 0.5, follow: false }] });
