@@ -20,6 +20,14 @@
       <button type="button" id="tabSignup">Pedir conta</button>
     </div>
     <form id="form" autocomplete="on">
+      <div id="profile" hidden>
+        <label for="fn">Nome</label>
+        <input type="text" id="fn" name="given-name" autocomplete="given-name" maxlength="60">
+        <label for="ln">Sobrenome</label>
+        <input type="text" id="ln" name="family-name" autocomplete="family-name" maxlength="60">
+        <label for="em">E-mail</label>
+        <input type="email" id="em" name="email" autocomplete="email" autocapitalize="none" spellcheck="false" maxlength="254">
+      </div>
       <label for="u">Usuário</label>
       <input type="text" id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
       <label for="p">Senha</label>
@@ -43,7 +51,10 @@ function setMode(m) {
   $("#go").textContent = m === "login" ? "Entrar" : "Pedir conta";
   $("#p").autocomplete = m === "login" ? "current-password" : "new-password";
   $("#hint").hidden = m === "login";
+  $("#profile").hidden = m === "login";
+  for (const f of ["#fn", "#ln", "#em"]) $(f).required = m === "signup";
   $("#err").textContent = ""; $("#info").textContent = "";
+  (m === "signup" ? $("#fn") : $("#u")).focus();
 }
 $("#tabLogin").onclick = () => setMode("login");
 $("#tabSignup").onclick = () => setMode("signup");
@@ -51,9 +62,10 @@ $("#form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   $("#err").textContent = ""; $("#go").disabled = true;
   try {
+    const body = { username: $("#u").value, password: $("#p").value };
+    if (mode === "signup") Object.assign(body, { first_name: $("#fn").value, last_name: $("#ln").value, email: $("#em").value });
     const r = await fetch(`${BASE}/api/auth/${mode === "login" ? "login" : "register"}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: $("#u").value, password: $("#p").value }) });
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (!r.ok) {
       let d = r.statusText; try { d = (await r.json()).detail || d; } catch {}
       $("#err").textContent = d; return;

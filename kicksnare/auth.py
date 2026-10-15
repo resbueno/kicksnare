@@ -32,6 +32,21 @@ def validate_username(name: str) -> str | None:
     return None
 
 
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+MAX_NAME = 60
+
+
+def validate_profile(first_name: str, last_name: str, email: str) -> str | None:
+    """Dados pessoais do cadastro (já sem espaços nas pontas). None se válidos."""
+    if not first_name or not last_name:
+        return "informe nome e sobrenome"
+    if len(first_name) > MAX_NAME or len(last_name) > MAX_NAME:
+        return f"nome e sobrenome: até {MAX_NAME} caracteres cada"
+    if len(email) > 254 or not EMAIL_RE.match(email):
+        return "e-mail inválido"
+    return None
+
+
 def validate_password(pw: str) -> str | None:
     if len(pw) < MIN_PASSWORD:
         return f"senha: mínimo de {MIN_PASSWORD} caracteres"

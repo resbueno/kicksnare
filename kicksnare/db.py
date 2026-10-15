@@ -61,6 +61,9 @@ def connect():
         con.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
     if "status" not in ucols:       # contas anteriores à aprovação continuam ativas
         con.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'")
+    for col in ("first_name", "last_name", "email"):   # pedidos no cadastro; contas antigas ficam sem
+        if col not in ucols:
+            con.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
     try:
         yield con
     finally:
@@ -191,17 +194,25 @@ def set_admin(user_id: int, is_admin: bool = True) -> None:
 USER_STATUSES = ("pending", "approved", "rejected", "blocked")
 
 
-def create_user(username: str, pw_hash: str, is_admin: bool = False, status: str = "approved") -> int | None:
+def create_user(username: str, pw_hash: str, is_admin: bool = False, status: str = "approved",
+                first_name: str | None = None, last_name: str | None = None,
+                email: str | None = None) -> int | None:
     """Retorna o id, ou None se o nome já existe."""
     with connect() as con:
         try:
             cur = con.execute(
-                "INSERT INTO users(username, pw_hash, created, is_admin, status) VALUES(?,?,?,?,?)",
-                (username, pw_hash, time.time(), 1 if is_admin else 0, status),
+                "INSERT INTO users(username, pw_hash, created, is_admin, status, first_name, last_name, email) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (username, pw_hash, time.time(), 1 if is_admin else 0, status, first_name, last_name, email),
             )
             return int(cur.lastrowid)
         except sqlite3.IntegrityError:
             return None
+
+
+def email_in_use(email: str) -> bool:
+    with connect() as con:
+        return con.execute("SELECT 1 FROM users WHERE lower(email)=lower(?)", (email,)).fetchone() is not None
 
 
 def get_user_by_name(username: str) -> dict | None:
@@ -252,7 +263,7 @@ def requeue_interrupted() -> int:
 def list_users() -> list[dict]:
     with connect() as con:
         rows = con.execute(
-            "SELECT u.id, u.username, u.created, u.is_admin, u.status, "
+            "SELECT u.id, u.username, u.first_name, u.last_name, u.email, u.created, u.is_admin, u.status, "
             "(SELECT COUNT(*) FROM songs WHERE owner_id = u.id) AS songs "
             "FROM users u ORDER BY (u.status='pending') DESC, u.created DESC"
         )

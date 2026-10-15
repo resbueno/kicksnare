@@ -172,6 +172,12 @@ class Credentials(BaseModel):
     password: str
 
 
+class Signup(Credentials):
+    first_name: str = ""
+    last_name: str = ""
+    email: str = ""
+
+
 class PasswordChange(BaseModel):
     current: str
     new: str
@@ -187,15 +193,20 @@ def _start_session(response: Response, request: Request, user_id: int) -> None:
 
 
 @app.post("/api/auth/register")
-def register(body: Credentials, request: Request, response: Response) -> dict:
+def register(body: Signup, request: Request, response: Response) -> dict:
     ip = _client_ip(request)
     if authlib.signups.blocked(ip):
         raise HTTPException(429, "muitos cadastros deste endereço; tente mais tarde")
     username = authlib.normalize_username(body.username)
-    err = authlib.validate_username(username) or authlib.validate_password(body.password)
+    first, last, email = body.first_name.strip(), body.last_name.strip(), body.email.strip().lower()
+    err = (authlib.validate_profile(first, last, email) or authlib.validate_username(username)
+           or authlib.validate_password(body.password))
     if err:
         raise HTTPException(400, err)
-    uid = db.create_user(username, authlib.hash_password(body.password), status="pending")
+    if db.email_in_use(email):
+        raise HTTPException(409, "este e-mail já tem uma conta")
+    uid = db.create_user(username, authlib.hash_password(body.password), status="pending",
+                         first_name=first, last_name=last, email=email)
     if uid is None:
         raise HTTPException(409, "este usuário já existe")
     authlib.signups.hit(ip)
