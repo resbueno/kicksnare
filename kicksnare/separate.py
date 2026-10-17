@@ -71,8 +71,11 @@ STEMS = ("drums", "bass", "other", "vocals")
 CHUNK_S = 180
 OVERLAP_S = 4
 SINGLE_MAX_S = 270      # até 4,5 min vai inteira (sem emenda nenhuma)
-# HiFi (htdemucs_ft): pico de 2,21 GB num bloco de 3 min e 2,25 GB num de 2 min (htdemucs: 1,63 GB).
-# O pico vem das 4 redes, não do tamanho do bloco: os blocos são os mesmos do padrão.
+# HiFi (htdemucs_ft) no servidor (Linux): pico de 2,05 GB num bloco de 60 s e 2,37 GB num de 120 s
+# (~1,74 GB + 5,3 MB por s de áudio); com blocos de 3 min passou de 2,7 GB e, somado ao worker
+# (~370 MB), foi morto pelo limite de 3 GB. No macOS o pico medido era menor (2,2 GB em 3 min) e
+# enganou. Blocos de 90 s (o maior pedaço, com sobra e sobreposição, fica em ~114 s: ~2,35 GB).
+CHUNKING = {"htdemucs_ft": (90, 110)}   # modelo -> (CHUNK_S, SINGLE_MAX_S)
 
 
 def _demucs(wav: Path, tmp: Path, segment: int, model: str, on_progress=None) -> Path:
@@ -113,13 +116,14 @@ def _demucs(wav: Path, tmp: Path, segment: int, model: str, on_progress=None) ->
 
 
 def _demucs_chunked(audio: Path, tmp: Path, segment: int, model: str, on_progress=None) -> Path:
-    """Demucs em blocos de CHUNK_S com OVERLAP_S de sobreposição; emenda as faixas com crossfade."""
+    """Demucs em blocos de CHUNK_S (ou o do modelo) com OVERLAP_S de sobreposição; emenda as faixas
+    com crossfade."""
     import numpy as np
     import soundfile as sf
 
     info = sf.info(str(audio))
     sr, n = info.samplerate, info.frames
-    step, ov = CHUNK_S * sr, OVERLAP_S * sr
+    step, ov = CHUNKING.get(model, (CHUNK_S,))[0] * sr, OVERLAP_S * sr
     starts = list(range(0, n, step))
     if len(starts) > 1 and n - starts[-1] < 20 * sr:     # último pedaço curto: junta ao anterior
         starts.pop()
@@ -168,7 +172,7 @@ def separate_drums(audio: Path, segment: int = 7, on_progress=None, quality: str
         return out, {"cached": True, **(separation_done(audio.parent) or {})}
     cfg = separation_config(quality)
     duration = sf.info(str(audio)).duration
-    chunked = duration > SINGLE_MAX_S
+    chunked = duration > CHUNKING.get(cfg["model"], (CHUNK_S, SINGLE_MAX_S))[1]
     with tempfile.TemporaryDirectory(prefix="kicksnare-demucs-") as tmp:
         started = time.monotonic()
         stems = (_demucs_chunked if chunked else _demucs)(audio, Path(tmp), segment, cfg["model"], on_progress)
