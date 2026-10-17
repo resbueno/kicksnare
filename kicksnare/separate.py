@@ -9,6 +9,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from .quality import HIFI, MODELS, STANDARD, normalize
+
 
 def _children_peak_mb() -> float:
     peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
@@ -16,11 +18,11 @@ def _children_peak_mb() -> float:
     return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
 
 
-# Modelo do Demucs. htdemucs_ft (4 redes, uma por instrumento) vaza menos baixo/guitarra na bateria
-# que o htdemucs (medido num rock, trecho de 60 s: contraste golpe/fundo em 80-1500 Hz de 19,6 para
-# 21,0 dB), mas leva ~4,4x mais (75 s -> 330 s de CPU por minuto de áudio). --shifts 2 dobrou o tempo
-# sem ganho mensurável no mesmo trecho; fica em 1. Padrão htdemucs: 4-8 min por música neste servidor.
-MODEL = os.environ.get("KICKSNARE_DEMUCS_MODEL", "htdemucs")
+# Modelo do Demucs por qualidade (quality.MODELS). htdemucs_ft (HiFi: 4 redes, uma por instrumento) vaza
+# menos baixo/guitarra na bateria que o htdemucs (medido num rock, trecho de 60 s: contraste golpe/fundo
+# em 80-1500 Hz de 19,6 para 21,0 dB), mas leva ~4,4x mais (75 s -> 330 s de CPU por minuto de áudio).
+# --shifts 2 dobrou o tempo sem ganho mensurável no mesmo trecho; fica em 1. Padrão htdemucs: 4-8 min
+# por música neste servidor.
 SHIFTS = int(os.environ.get("KICKSNARE_DEMUCS_SHIFTS", "1"))
 LEGACY = {"model": "htdemucs", "shifts": 1}   # músicas separadas antes de existir separation.json
 BAG_SIZE = {"htdemucs_ft": 4, "mdx": 4, "mdx_extra": 4, "mdx_q": 4, "mdx_extra_q": 4}  # redes por modelo
@@ -31,17 +33,35 @@ DERIVED = ("no_drums.wav", "no_drums.mp3", "drums-gate.mp3", "drums.mp3", "bass.
 OTHER_STEMS = ("bass", "other", "vocals")
 
 
-def separation_config() -> dict:
-    return {"model": MODEL, "shifts": SHIFTS}
+def separation_config(quality: str = STANDARD) -> dict:
+    return {"model": MODELS[normalize(quality)], "shifts": SHIFTS}
 
 
-def needs_separation(song_dir: Path) -> bool:
-    """Falta drums.wav, ou ele foi gerado com outro modelo/shifts (ex.: música antiga reprocessada)."""
+def separation_done(song_dir: Path) -> dict | None:
+    """Como foi feita a separação que está na pasta (None se não há)."""
     if not (song_dir / "drums.wav").exists():
-        return True
+        return None
     info = song_dir / "separation.json"
-    done = json.loads(info.read_text()) if info.exists() else LEGACY
-    return done != separation_config()
+    try:
+        return json.loads(info.read_text()) if info.exists() else LEGACY
+    except (OSError, ValueError):
+        return None
+
+
+def separation_quality(song_dir: Path, requested: str = STANDARD) -> str:
+    """Qualidade da separação que a pasta tem de fato (pedir padrão numa música HiFi mantém a HiFi)."""
+    return HIFI if separation_done(song_dir) == separation_config(HIFI) else normalize(requested)
+
+
+def needs_separation(song_dir: Path, quality: str = STANDARD) -> bool:
+    """Falta drums.wav, ou ele foi gerado com outro modelo/shifts (ex.: música antiga reprocessada).
+    Pedindo padrão, uma separação HiFi já feita vale (é melhor; refazer seria perder trabalho)."""
+    done = separation_done(song_dir)
+    if done is None:
+        return True
+    if done == separation_config(quality):
+        return False
+    return not (normalize(quality) == STANDARD and done == separation_config(HIFI))
 
 
 STEMS = ("drums", "bass", "other", "vocals")
@@ -51,19 +71,21 @@ STEMS = ("drums", "bass", "other", "vocals")
 CHUNK_S = 180
 OVERLAP_S = 4
 SINGLE_MAX_S = 270      # até 4,5 min vai inteira (sem emenda nenhuma)
+# HiFi (htdemucs_ft): pico de 2,21 GB num bloco de 3 min e 2,25 GB num de 2 min (htdemucs: 1,63 GB).
+# O pico vem das 4 redes, não do tamanho do bloco: os blocos são os mesmos do padrão.
 
 
-def _demucs(wav: Path, tmp: Path, segment: int, on_progress=None) -> Path:
+def _demucs(wav: Path, tmp: Path, segment: int, model: str, on_progress=None) -> Path:
     """Roda o Demucs (4 faixas) num wav e devolve a pasta com drums/bass/other/vocals.wav."""
     import re
 
     # Uma barra do tqdm por rede e por shift, cada uma de 0 a 100%. "63.0/63.0 [" casa só as barras
     # do áudio (em segundos); as do download dos pesos ("80.2M/80.2M") ficam de fora.
     pct = re.compile(r"(\d{1,3})%\|[^|]*\|\s*[\d.]+/[\d.]+ \[")
-    passes = BAG_SIZE.get(MODEL, 1) * SHIFTS
+    passes = BAG_SIZE.get(model, 1) * SHIFTS
     cmd = [
         sys.executable, "-m", "demucs",
-        "-n", MODEL, "--shifts", str(SHIFTS),
+        "-n", model, "--shifts", str(SHIFTS),
         "--segment", str(segment), "-j", "1", "-d", "cpu",
         "-o", str(tmp), str(wav),
     ]
@@ -87,10 +109,10 @@ def _demucs(wav: Path, tmp: Path, segment: int, on_progress=None) -> Path:
         if proc.returncode in (-9, 137):
             msg = "sem memória (processo encerrado pelo sistema)\n" + msg
         raise RuntimeError(f"demucs falhou:\n{msg}")
-    return tmp / MODEL / wav.stem
+    return tmp / model / wav.stem
 
 
-def _demucs_chunked(audio: Path, tmp: Path, segment: int, on_progress=None) -> Path:
+def _demucs_chunked(audio: Path, tmp: Path, segment: int, model: str, on_progress=None) -> Path:
     """Demucs em blocos de CHUNK_S com OVERLAP_S de sobreposição; emenda as faixas com crossfade."""
     import numpy as np
     import soundfile as sf
@@ -116,7 +138,7 @@ def _demucs_chunked(audio: Path, tmp: Path, segment: int, on_progress=None) -> P
             piece = tmp / f"bloco{i}.wav"
             sf.write(str(piece), x, sr, subtype="FLOAT")
             report = (lambda p, i=i: on_progress((i + p) / len(starts))) if on_progress else None
-            stems = _demucs(piece, tmp / f"d{i}", segment, report)
+            stems = _demucs(piece, tmp / f"d{i}", segment, model, report)
             last = i + 1 == len(starts)
             for s in STEMS:
                 y, _ = sf.read(str(stems / f"{s}.wav"), dtype="float32", always_2d=True)
@@ -136,20 +158,24 @@ def _demucs_chunked(audio: Path, tmp: Path, segment: int, on_progress=None) -> P
     return out_dir
 
 
-def separate_drums(audio: Path, segment: int = 7, on_progress=None) -> tuple[Path, dict]:
-    """Gera <dir do audio>/drums.wav, bass.wav e no_drums.wav. `on_progress(0..1)` recebe o avanço do Demucs."""
+def separate_drums(audio: Path, segment: int = 7, on_progress=None, quality: str = STANDARD) -> tuple[Path, dict]:
+    """Gera <dir do audio>/drums.wav, bass.wav e no_drums.wav com o modelo da qualidade pedida.
+    `on_progress(0..1)` recebe o avanço do Demucs."""
     import soundfile as sf
 
     out = audio.parent / "drums.wav"
-    if not needs_separation(audio.parent):
-        return out, {"cached": True}
-    cfg = separation_config()
+    if not needs_separation(audio.parent, quality):
+        return out, {"cached": True, **(separation_done(audio.parent) or {})}
+    cfg = separation_config(quality)
     duration = sf.info(str(audio)).duration
     chunked = duration > SINGLE_MAX_S
     with tempfile.TemporaryDirectory(prefix="kicksnare-demucs-") as tmp:
         started = time.monotonic()
-        stems = (_demucs_chunked if chunked else _demucs)(audio, Path(tmp), segment, on_progress)
+        stems = (_demucs_chunked if chunked else _demucs)(audio, Path(tmp), segment, cfg["model"], on_progress)
         elapsed = time.monotonic() - started
+        # sem separation.json a pasta conta como "sem separação" (o outro sistema não reaproveita
+        # arquivos pela metade); ele volta por último, quando as faixas novas estão todas no lugar
+        (audio.parent / "separation.json").unlink(missing_ok=True)
         for name in DERIVED:
             (audio.parent / name).unlink(missing_ok=True)
         shutil.move(str(stems / "drums.wav"), out)

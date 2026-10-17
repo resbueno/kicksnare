@@ -1,6 +1,8 @@
 """Worker: pega uma música da fila por vez e roda ingest -> demucs -> transcrição.
 
 Uso: python -m kicksnare.worker
+KICKSNARE_WORKER_QUALITY=standard | hifi | all escolhe as filas atendidas (padrão: all). Com dois
+workers (um por qualidade) as duas filas andam em paralelo; cada um atende Kicksnare e GrooveBass.
 """
 import json
 import subprocess
@@ -8,9 +10,9 @@ import sys
 import time
 import traceback
 
-from . import companion, db, identify, sections
+from . import companion, db, identify, quality as qualitylib, sections
 from .ingest import DATA_DIR, ingest
-from .separate import encode_mp3, ensure_no_drums, needs_separation, separate_drums
+from .separate import encode_mp3, ensure_no_drums, needs_separation, separate_drums, separation_quality
 
 
 def _set(song_id: str, stage: str, message: str) -> None:
@@ -66,7 +68,8 @@ def process(song: dict) -> None:
     sid, source = song["id"], song["source"]
 
     _set(sid, "ingest", "Baixando áudio" if source.startswith("http") else "Preparando áudio")
-    reused = companion.reuse_from_groovebass(DATA_DIR / sid)  # GrooveBass já baixou/separou?
+    quality = qualitylib.normalize(song.get("quality"))
+    reused = companion.reuse_from_groovebass(DATA_DIR / sid, quality)  # GrooveBass já baixou/separou?
     if reused:
         print(f"[{sid}] reaproveitado do GrooveBass: {reused}", flush=True)
     _, audio = ingest(source, song_id=sid)
@@ -76,9 +79,10 @@ def process(song: dict) -> None:
     db.update(sid, duration=_duration(audio))
     _identify(sid, meta)
 
-    if needs_separation(audio.parent):   # também quando o modelo do Demucs mudou
-        _set(sid, "separate", "Isolando a bateria (alguns minutos)")
-        _, metrics = separate_drums(audio, on_progress=lambda p: db.update(sid, progress=round(p, 3)))
+    if needs_separation(audio.parent, quality):   # também quando o modelo do Demucs mudou
+        hifi = quality == qualitylib.HIFI
+        _set(sid, "separate", "Isolando a bateria em HiFi (mais demorado)" if hifi else "Isolando a bateria (alguns minutos)")
+        _, metrics = separate_drums(audio, on_progress=lambda p: db.update(sid, progress=round(p, 3)), quality=quality)
         print(f"[{sid}] demucs {metrics}", flush=True)
 
     _set(sid, "transcribe", "Transcrevendo")
@@ -107,7 +111,7 @@ def process(song: dict) -> None:
     if row.get("stage_started"):
         timings["finalize"] = round(time.time() - row["stage_started"], 1)
     db.update(sid, status="done", stage=None, message="Pronto", stats=stats, finished=time.time(), error=None,
-              timings=timings, progress=1.0)
+              timings=timings, progress=1.0, quality=separation_quality(audio.parent, quality))
 
 
 def _groovebass():
@@ -121,22 +125,23 @@ def _groovebass():
 
 
 def main() -> None:
-    n = db.requeue_interrupted()
+    qualities = qualitylib.worker_qualities()
+    n = db.requeue_interrupted(qualities)
     if n:
         print(f"reenfileirados {n} jobs interrompidos", flush=True)
     gb = _groovebass()
     if gb:
-        n = gb.requeue()
+        n = gb.requeue(qualities)
         print(f"GrooveBass ativo{f' (reenfileirados {n})' if n else ''}", flush=True)
-    print("worker pronto", flush=True)
+    print(f"worker pronto ({', '.join(qualitylib.LABELS[q] for q in qualities)})", flush=True)
     while True:
-        # uma música por vez no total: atende a fila cuja música espera há mais tempo
+        # uma música por vez neste worker: atende a fila cuja música espera há mais tempo
         if gb:
-            ks_old, gb_old = db.oldest_queued(), gb.oldest_queued()
+            ks_old, gb_old = db.oldest_queued(qualities), gb.oldest_queued(qualities)
             if gb_old is not None and (ks_old is None or gb_old < ks_old):
-                gb.run_next()
+                gb.run_next(qualities)
                 continue
-        song = db.claim_next()
+        song = db.claim_next(qualities)
         if not song:
             time.sleep(2)
             continue

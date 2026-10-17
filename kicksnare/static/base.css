@@ -156,3 +156,8 @@ body.wide main, body.wide .brandbar .in { max-width: 1440px; }
 .nodrum { position: relative; display: inline-block; }
 .nodrum::after { content: ""; position: absolute; left: -2px; right: -2px; top: 50%; height: 2px;
   background: currentColor; transform: rotate(-45deg); }
+
+/* qualidade da separação (Padrão / HiFi) com a previsão de cada uma */
+.quality { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; }
+.quality .qopt { display: inline-flex; align-items: baseline; gap: 4px; cursor: pointer; }
+.quality .qnote { flex-basis: 100%; }

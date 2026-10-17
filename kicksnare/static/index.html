@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
 <link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
 <meta name="theme-color" content="#16181d">
-<link rel="stylesheet" href="__BASE__/static/base.css?v=5">
+<link rel="stylesheet" href="__BASE__/static/base.css?v=6">
 </head>
 <body>
 <header class="brandbar"><div class="in"><a href="__BASE__/" aria-label="Kicksnare — início"><img src="__BASE__/static/logo.png" alt="Kicksnare — partitura de bateria" width="165" height="46"></a></div></header>
@@ -26,10 +26,16 @@
     </form>
     <div class="row" style="margin-top:14px">
       <span class="muted small">ou</span>
-      <label class="btn sm" for="file">Enviar arquivo de áudio</label>
+      <label class="btn sm" for="file">Escolher arquivo de áudio</label>
       <input id="file" type="file" accept="audio/*,video/*" hidden>
+      <span id="pending" class="row" hidden>
+        <span id="pendingName" class="small"></span>
+        <button id="sendFile" class="primary sm" type="button">Enviar</button>
+        <button id="cancelFile" class="ghost sm" type="button">Cancelar</button>
+      </span>
       <span id="msg" class="muted small"></span>
     </div>
+    <div id="quality" style="margin-top:14px"></div>
   </div>
 
   <div class="search" style="margin-top:48px">
@@ -56,6 +62,7 @@
   <div class="panel" id="list"><span class="muted">Carregando…</span></div>
 </main>
 <script src="__BASE__/static/auth.js" data-base="__BASE__"></script>
+<script src="__BASE__/static/quality.js?v=1"></script>
 <script>
 const BASE = "__BASE__";
 const $ = (s) => document.querySelector(s);
@@ -161,6 +168,10 @@ function songRow(s) {
       const o = document.createElement("span"); o.className = "chip"; o.textContent = "de " + s.owner;
       o.style.marginRight = "8px"; left.append(o);
     }
+    if (s.quality === "hifi") {
+      const o = document.createElement("span"); o.className = "chip"; o.textContent = "HiFi";
+      o.title = "Separação em alta qualidade (htdemucs_ft)"; o.style.marginRight = "8px"; left.append(o);
+    }
     if (s.shared && s.can_edit) {
       const o = document.createElement("span"); o.className = "chip ok"; o.textContent = "compartilhada";
       o.title = "Os outros usuários podem ver, ouvir e baixar"; o.style.marginRight = "8px"; left.append(o);
@@ -253,23 +264,44 @@ async function load() {
   try { render(await (await fetch(BASE + "/api/songs" + ($("#mine").checked ? "?mine=1" : ""))).json()); } catch (e) { $("#list").textContent = "Falha ao carregar: " + e; }
 }
 
+// qualidade (Padrão/HiFi) com a previsão de tempo de cada uma, para o link ou o arquivo escolhido
+const picker = qualityPicker($("#quality"), BASE);
+let urlTimer = null, pendingFile = null;
+$("#url").addEventListener("input", () => {
+  clearTimeout(urlTimer);
+  urlTimer = setTimeout(() => { if (!pendingFile) picker.forUrl($("#url").value); }, 700);
+});
+
 $("#add").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   $("#msg").textContent = "";
   const r = await fetch(BASE + "/api/songs", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: $("#url").value }) });
+    body: JSON.stringify({ url: $("#url").value, quality: picker.value }) });
   if (!r.ok) { $("#msg").textContent = (await r.json()).detail || "Erro"; return; }
-  $("#url").value = ""; load();
+  $("#url").value = ""; picker.reset(); load();
 });
 
-$("#file").addEventListener("change", async (ev) => {
+function clearFile() {
+  pendingFile = null; $("#file").value = ""; $("#pending").hidden = true; picker.forUrl($("#url").value);
+}
+$("#file").addEventListener("change", (ev) => {
   const f = ev.target.files[0]; if (!f) return;
+  pendingFile = f; $("#msg").textContent = "";
+  $("#pendingName").textContent = f.name; $("#pending").hidden = false;
+  picker.forFile(f);                      // previsão com a duração deste arquivo; envia no botão
+});
+$("#cancelFile").onclick = clearFile;
+$("#sendFile").onclick = async () => {
+  const f = pendingFile; if (!f) return;
+  $("#sendFile").disabled = true;
   $("#msg").textContent = "Enviando " + f.name + "…";
-  const fd = new FormData(); fd.append("file", f);
+  const fd = new FormData(); fd.append("file", f); fd.append("quality", picker.value);
   const r = await fetch(BASE + "/api/upload", { method: "POST", body: fd });
   $("#msg").textContent = r.ok ? "" : ((await r.json()).detail || "Erro no envio");
-  ev.target.value = ""; load();
-});
+  $("#sendFile").disabled = false;
+  if (r.ok) clearFile();
+  load();
+};
 
 let isAdmin = false, renaming = false;
 fetch(BASE + "/api/auth/me").then((r) => r.json()).then((u) => {

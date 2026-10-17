@@ -1,4 +1,5 @@
-"""Fila de jobs em SQLite. Sem Redis: 1 worker, 1 música por vez, alternando entre os usuários."""
+"""Fila de jobs em SQLite. Sem Redis: uma fila por qualidade (padrão e HiFi, cada uma com o seu worker),
+uma música por vez em cada, alternando entre os usuários."""
 import json
 import sqlite3
 import time
@@ -6,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .ingest import DATA_DIR
+from .quality import STANDARD, normalize, sql_filter as _in
 
 DB_PATH = DATA_DIR / "kicksnare.db"
 
@@ -41,30 +43,50 @@ CREATE TABLE IF NOT EXISTS songs (
 """
 
 
+def wal(con) -> None:
+    """Liga o modo WAL uma vez por banco. Trocar o modo não espera pelo busy timeout: com vários
+    processos abrindo o banco novo juntos (web e dois workers), os outros recebem "database is locked";
+    quem perdeu a corrida segue, porque o vencedor já ligou."""
+    if con.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":
+        try:
+            con.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            pass
+
+
+def add_column(con, table: str, col: str, ddl: str) -> None:
+    """Migração idempotente: outro processo pode ter criado a coluna entre a leitura e o ALTER."""
+    try:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
+
+
 @contextmanager
 def connect():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
+    wal(con)
     con.execute(SCHEMA)
     for stmt in SCHEMA_USERS.split(";"):
         con.execute(stmt)
     cols = {r["name"] for r in con.execute("PRAGMA table_info(songs)")}
     if "owner_id" not in cols:      # migração: músicas existentes ficam sem dono até alguém assumir
-        con.execute("ALTER TABLE songs ADD COLUMN owner_id INTEGER")
+        add_column(con, "songs", "owner_id", "INTEGER")
     for col, ddl in (("duration", "REAL"), ("stage_started", "REAL"), ("timings", "TEXT"), ("progress", "REAL"), ("artist", "TEXT"),
-                     ("shared", "INTEGER NOT NULL DEFAULT 0")):
-        if col not in cols:         # estimativa de tempo, banda/autor, música aberta aos outros usuários
-            con.execute(f"ALTER TABLE songs ADD COLUMN {col} {ddl}")
+                     ("shared", "INTEGER NOT NULL DEFAULT 0"), ("quality", "TEXT NOT NULL DEFAULT 'standard'")):
+        if col not in cols:         # estimativa de tempo, banda/autor, compartilhada, qualidade
+            add_column(con, "songs", col, ddl)
     ucols = {r["name"] for r in con.execute("PRAGMA table_info(users)")}
     if "is_admin" not in ucols:
-        con.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        add_column(con, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
     if "status" not in ucols:       # contas anteriores à aprovação continuam ativas
-        con.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'")
+        add_column(con, "users", "status", "TEXT NOT NULL DEFAULT 'approved'")
     for col in ("first_name", "last_name", "email"):   # pedidos no cadastro; contas antigas ficam sem
         if col not in ucols:
-            con.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
+            add_column(con, "users", col, "TEXT")
     try:
         yield con
     finally:
@@ -78,7 +100,8 @@ def _row(r) -> dict:
     return d
 
 
-def enqueue(song_id: str, source: str, title: str | None = None, owner_id: int | None = None) -> dict:
+def enqueue(song_id: str, source: str, title: str | None = None, owner_id: int | None = None,
+            quality: str = STANDARD) -> dict:
     """Cria a música na fila. Se já existe e está pronta/em andamento, não duplica."""
     with connect() as con:
         cur = con.execute("SELECT * FROM songs WHERE id=?", (song_id,)).fetchone()
@@ -86,20 +109,22 @@ def enqueue(song_id: str, source: str, title: str | None = None, owner_id: int |
             return _row(cur)
         now = time.time()
         con.execute(
-            "INSERT OR REPLACE INTO songs(id,title,source,status,stage,message,created,owner_id) VALUES(?,?,?,?,?,?,?,?)",
-            (song_id, title, source, "queued", None, "Na fila", now, owner_id),
+            "INSERT OR REPLACE INTO songs(id,title,source,status,stage,message,created,owner_id,quality) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (song_id, title, source, "queued", None, "Na fila", now, owner_id, normalize(quality)),
         )
         return _row(con.execute("SELECT * FROM songs WHERE id=?", (song_id,)).fetchone())
 
 
-def _fair_queue(con) -> list:
+def _fair_queue(con, qualities=None) -> list:
     """Músicas na fila na ordem em que o worker vai pegá-las: alterna entre os donos.
 
     Vai à frente quem está há mais tempo sem ter uma música iniciada (quem nunca teve, primeiro);
     entre as músicas do mesmo dono vale a ordem de chegada. Assim quem enfileira muitas músicas
     não faz os outros esperarem todas elas.
     """
-    queued = con.execute("SELECT * FROM songs WHERE status='queued' ORDER BY created").fetchall()
+    where, args = _in(qualities)
+    queued = con.execute(f"SELECT * FROM songs WHERE status='queued' AND {where} ORDER BY created", args).fetchall()
     last = {r["owner_id"]: r["last"] for r in con.execute(
         "SELECT owner_id, MAX(started) AS last FROM songs WHERE started IS NOT NULL GROUP BY owner_id")}
     pending: dict = {}
@@ -115,16 +140,18 @@ def _fair_queue(con) -> list:
     return order
 
 
-def oldest_queued() -> float | None:
+def oldest_queued(qualities=None) -> float | None:
     """Quando chegou a música que espera há mais tempo (o worker alterna com o GrooveBass por isso)."""
+    where, args = _in(qualities)
     with connect() as con:
-        return con.execute("SELECT MIN(created) FROM songs WHERE status='queued'").fetchone()[0]
+        return con.execute(f"SELECT MIN(created) FROM songs WHERE status='queued' AND {where}", args).fetchone()[0]
 
 
-def claim_next() -> dict | None:
+def claim_next(qualities=None) -> dict | None:
+    """Reserva a próxima música das qualidades deste worker (transação: dois workers nunca pegam a mesma)."""
     with connect() as con:
         con.execute("BEGIN IMMEDIATE")
-        queue = _fair_queue(con)
+        queue = _fair_queue(con, qualities)
         r = queue[0] if queue else None
         if not r:
             con.execute("COMMIT")
@@ -263,11 +290,14 @@ def delete_session(token_hash: str) -> None:
         con.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
 
 
-def requeue_interrupted() -> int:
-    """Jobs 'running' ficam órfãos se o worker morreu; voltam para a fila."""
+def requeue_interrupted(qualities=None) -> int:
+    """Jobs 'running' ficam órfãos se o worker morreu; voltam para a fila. Só os das qualidades deste
+    worker: os do outro worker podem estar rodando agora."""
+    where, args = _in(qualities)
     with connect() as con:
         return con.execute(
-            "UPDATE songs SET status='queued', message='Reenfileirado após reinício' WHERE status='running'"
+            f"UPDATE songs SET status='queued', message='Reenfileirado após reinício' WHERE status='running' AND {where}",
+            args,
         ).rowcount
 
 
@@ -302,18 +332,20 @@ def set_user_status(user_id: int, status: str) -> None:
             con.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
 
 
-def active_songs() -> list[dict]:
-    """Fila inteira (todos os usuários), na ordem em que o worker as pega."""
+def active_songs(qualities=None) -> list[dict]:
+    """Fila inteira (todos os usuários) das qualidades pedidas, na ordem em que o worker as pega."""
+    where, args = _in(qualities)
     with connect() as con:
-        running = con.execute("SELECT * FROM songs WHERE status='running' ORDER BY started").fetchall()
-        return [_row(r) for r in [*running, *_fair_queue(con)]]
+        running = con.execute(f"SELECT * FROM songs WHERE status='running' AND {where} ORDER BY started", args).fetchall()
+        return [_row(r) for r in [*running, *_fair_queue(con, qualities)]]
 
 
-def history(limit: int = 15) -> list[dict]:
-    """Últimos jobs concluídos com os tempos de cada etapa (base da estimativa)."""
+def history(limit: int = 15, quality: str | None = None) -> list[dict]:
+    """Últimos jobs concluídos com os tempos de cada etapa (base da estimativa), da qualidade pedida."""
+    where, args = _in(quality)
     with connect() as con:
         rows = con.execute(
-            "SELECT duration, timings FROM songs WHERE status='done' AND duration > 0 AND timings IS NOT NULL "
-            "ORDER BY finished DESC LIMIT ?", (limit,)
+            "SELECT duration, timings, quality FROM songs WHERE status='done' AND duration > 0 AND timings IS NOT NULL "
+            f"AND {where} ORDER BY finished DESC LIMIT ?", (*args, limit)
         )
         return [_row(r) for r in rows]

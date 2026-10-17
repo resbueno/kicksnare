@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" href="__BASE__/static/favicon.png">
 <link rel="apple-touch-icon" href="__BASE__/static/apple-touch-icon.png">
 <meta name="theme-color" content="#16181d">
-<link rel="stylesheet" href="__BASE__/static/base.css?v=5">
+<link rel="stylesheet" href="__BASE__/static/base.css?v=6">
 <style>
   [hidden] { display: none !important; }
   #score { background: #fff; border-radius: 12px; padding: 8px 4px; overflow-x: hidden; border: 1px solid var(--line); }
@@ -70,6 +70,15 @@
     <h1 id="title">Carregando…</h1>
     <button id="renameBtn" type="button" class="ghost sm" title="Editar o nome da música" aria-label="Editar nome" hidden>✎ Editar</button>
     <button id="reprocessBtn" type="button" class="ghost sm" title="Transcrever de novo com o algoritmo mais recente" hidden>↻ Reprocessar</button>
+  </div>
+  <div id="reprocessBox" class="panel" hidden style="margin:10px 0">
+    <div class="small" style="margin-bottom:8px">Transcrever de novo com o algoritmo mais recente. Correções feitas no
+      editor de padrões serão descartadas (ficam guardadas em backup no servidor).</div>
+    <div id="reprocessQuality"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="reprocessGo" class="primary sm" type="button">Reprocessar</button>
+      <button id="reprocessCancel" class="ghost sm" type="button">Cancelar</button>
+    </div>
   </div>
   <form id="renameForm" class="row" hidden>
     <input type="text" id="renameInput" maxlength="120" style="flex:1 1 320px" aria-label="Nome da música">
@@ -252,6 +261,7 @@
 </div>
 
 <script src="__BASE__/static/auth.js" data-base="__BASE__"></script>
+<script src="__BASE__/static/quality.js?v=1"></script>
 <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.9.0/build/opensheetmusicdisplay.min.js"></script>
 <script>
 const BASE = "__BASE__";
@@ -281,6 +291,7 @@ async function boot() {
   }
   $("#status").textContent = "";
   $("#reprocessBtn").hidden = !song.can_edit;
+  songInfo = song;
   if (song.can_edit) {
     const link = document.createElement("a"); link.href = `${BASE}/songs/${encodeURIComponent(id)}/sheet`;
     link.textContent = "Sincronizar com partitura em PDF →"; link.className = "small";
@@ -883,11 +894,18 @@ $("#renameBtn").onclick = () => {
   $("#renameForm").hidden = false; $("#renameBtn").hidden = true; $("#renameMsg").textContent = "";
   $("#renameInput").focus(); $("#renameInput").select();
 };
-$("#reprocessBtn").onclick = async () => {
-  if (!confirm("Transcrever esta música de novo com o algoritmo mais recente?\n\n" +
-               "Leva alguns minutos. Correções feitas no editor de padrões serão descartadas " +
-               "(ficam guardadas em backup no servidor).")) return;
-  const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/reprocess`, { method: "POST" });
+// reprocessar: escolhe a qualidade vendo a previsão de cada uma para a duração desta música
+let songInfo = null, reprocessPicker = null;
+$("#reprocessBtn").onclick = () => {
+  if (!reprocessPicker) reprocessPicker = qualityPicker($("#reprocessQuality"), BASE);
+  reprocessPicker.value = songInfo?.quality;
+  reprocessPicker.forDuration(songInfo?.duration);
+  $("#reprocessBox").hidden = false; $("#reprocessBtn").hidden = true;
+};
+$("#reprocessCancel").onclick = () => { $("#reprocessBox").hidden = true; $("#reprocessBtn").hidden = false; };
+$("#reprocessGo").onclick = async () => {
+  const r = await fetch(`${BASE}/api/songs/${encodeURIComponent(id)}/reprocess`, { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quality: reprocessPicker.value }) });
   if (!r.ok) { let d = r.statusText; try { d = (await r.json()).detail || d; } catch {} alert(d); return; }
   location.reload();
 };

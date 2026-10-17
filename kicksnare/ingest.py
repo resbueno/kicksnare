@@ -45,6 +45,17 @@ def _video_meta(url: str) -> tuple[str, str, dict]:
     return lines[0], (lines[1] if len(lines) > 1 else lines[0]), extra
 
 
+def url_duration(url: str, timeout: int = 25) -> float | None:
+    """Duração do vídeo em segundos via yt-dlp, sem baixar (para a previsão antes de enviar). None se
+    o yt-dlp não souber ou demorar."""
+    try:
+        result = subprocess.run([*YTDLP, "--no-playlist", "--print", "%(duration)s", url],
+                                capture_output=True, text=True, timeout=timeout)
+        return float(result.stdout.strip().splitlines()[0]) if result.returncode == 0 else None
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
+        return None
+
+
 def file_song_id(path: Path) -> str:
     return "file-" + hashlib.sha1(f"{path.name}:{path.stat().st_size}".encode()).hexdigest()[:10]
 

@@ -15,13 +15,13 @@ import shutil
 from pathlib import Path
 
 import cv2
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import auth as authlib
-from . import companion, db, eta as etalib, sections as sectionslib, sheet as sheetlib
+from . import companion, db, eta as etalib, quality as qualitylib, sections as sectionslib, sheet as sheetlib
 from .ingest import DATA_DIR, file_song_id
 from .separate import encode_mp3, ensure_no_drums
 from .patterns import (
@@ -317,6 +317,7 @@ def song_page(song_id: str) -> HTMLResponse:
 # ---------- fila ----------
 class NewSong(BaseModel):
     url: str
+    quality: str = qualitylib.STANDARD
 
 
 def _scoped_id(user: dict, raw: str) -> str:
@@ -352,8 +353,15 @@ def list_songs(mine: bool = False) -> list[dict]:
     songs = [{**_fresh(s), "can_edit": admin or s.get("owner_id") == user["id"]}
              for s in db.list_songs(owner, with_shared=not mine)]
     if any(s["status"] in ("queued", "running") for s in songs):
-        etalib.annotate(songs, db.active_songs(), db.history())
+        etalib.annotate(songs, companion.systems())
     return songs
+
+
+@app.get("/api/estimate")
+def estimate(url: str | None = None, duration: float | None = None) -> dict:
+    """Previsão de tempo de uma música nova em cada qualidade (Padrão e HiFi), antes de enviar."""
+    _require_user()
+    return etalib.new_song(url, duration, companion.systems())
 
 
 @app.post("/api/songs")
@@ -369,13 +377,14 @@ def add_song(body: NewSong) -> dict:
     if not (existing and existing.get("owner_id") == user["id"]
             and existing["status"] in ("queued", "running", "done")):
         _check_quota(user)
-    song = db.enqueue(song_id, url, owner_id=user["id"])
-    companion.mirror_enqueue(song_id, url, None, user["id"])     # aparece também no GrooveBass
+    quality = qualitylib.normalize(body.quality)
+    song = db.enqueue(song_id, url, owner_id=user["id"], quality=quality)
+    companion.mirror_enqueue(song_id, url, None, user["id"], quality)     # aparece também no GrooveBass
     return song
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...)) -> dict:
+async def upload(file: UploadFile = File(...), quality: str = Form(qualitylib.STANDARD)) -> dict:
     user = _require_user()
     _check_quota(user)
     name = re.sub(r"[^A-Za-z0-9._ -]", "_", Path(file.filename or "audio").name)[:120]
@@ -392,8 +401,9 @@ async def upload(file: UploadFile = File(...)) -> dict:
                 raise HTTPException(413, "arquivo grande demais (máx. 300 MB)")
             out.write(chunk)
     song_id = _scoped_id(user, file_song_id(dest))
-    song = db.enqueue(song_id, str(dest), title=Path(name).stem, owner_id=user["id"])
-    companion.mirror_enqueue(song_id, str(dest), Path(name).stem, user["id"])
+    quality = qualitylib.normalize(quality)
+    song = db.enqueue(song_id, str(dest), title=Path(name).stem, owner_id=user["id"], quality=quality)
+    companion.mirror_enqueue(song_id, str(dest), Path(name).stem, user["id"], quality)
     return song
 
 
@@ -401,7 +411,7 @@ async def upload(file: UploadFile = File(...)) -> dict:
 def get_song(song_id: str) -> dict:
     song = _song(song_id)
     if song["status"] in ("queued", "running"):
-        etalib.annotate([song], db.active_songs(), db.history())
+        etalib.annotate([song], companion.systems())
     owner = db.get_user(song["owner_id"]) if song.get("owner_id") else None
     return {**song, "owner": owner["username"] if owner else None}
 
@@ -490,10 +500,15 @@ def retry(song_id: str) -> dict:
     return db.get(song_id)
 
 
+class Reprocess(BaseModel):
+    quality: str | None = None       # None = mantém a qualidade da música
+
+
 @app.post("/api/songs/{song_id}/reprocess")
-def reprocess(song_id: str) -> dict:
+def reprocess(song_id: str, body: Reprocess | None = None) -> dict:
     """Refaz a transcrição com o algoritmo atual, reaproveitando o áudio. A bateria já separada é
-    reaproveitada, salvo se foi gerada com outro modelo do Demucs (aí a separação é refeita).
+    reaproveitada, salvo se foi gerada com outro modelo do Demucs (aí a separação é refeita). Pedindo
+    HiFi numa música separada em padrão, a separação é refeita em HiFi; o contrário reaproveita a HiFi.
 
     As edições de padrão apontam para grupos de compassos que mudam com a nova transcrição: ficam
     guardadas em edits.bak.json. O mp3 da bateria solo depende dos golpes (events.json) e é refeito.
@@ -509,7 +524,9 @@ def reprocess(song_id: str) -> dict:
     if parts.exists():
         parts.replace(song_dir / "sections.bak.json")
     (song_dir / "drums-gate.mp3").unlink(missing_ok=True)
-    db.update(song_id, status="queued", message="Na fila para reprocessar", error=None, stage=None, progress=0.0)
+    quality = qualitylib.normalize(body.quality if body and body.quality else song.get("quality"))
+    db.update(song_id, status="queued", message="Na fila para reprocessar", error=None, stage=None, progress=0.0,
+              quality=quality)
     return db.get(song_id)
 
 
